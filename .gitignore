@@ -1,0 +1,22 @@
+# ห้ามให้ไฟล์เหล่านี้ขึ้น GitHub เด็ดขาด — มีข้อมูลลับ/รหัสผ่าน/คีย์ส่วนตัว
+.env
+.env.*
+!.env.example
+*service_account*.json
+*credentials*.json
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+env/
+*.egg-info/
+
+# OS / editor junk
+.DS_Store
+.vscode/
+.idea/
