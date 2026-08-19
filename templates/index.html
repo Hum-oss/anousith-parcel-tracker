@@ -1,0 +1,987 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anousith Express — ระบบติดตามพัสดุ</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&family=Prompt:wght@600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'Noto Sans Thai', sans-serif; background:#F7F5F3; color:#221F1F; }
+  a { color: #B3160F; text-decoration: none; }
+  a:hover { color: #85100B; text-decoration: underline; }
+  ::placeholder { color: #A39C99; }
+  button, input, select, textarea { font-family: 'Noto Sans Thai', sans-serif; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  .fadein { animation: fadeIn .3s ease; }
+  .clickable { cursor: pointer; }
+  table { border-collapse: collapse; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+/* =====================================================================
+ * Anousith Express — ระบบติดตามพัสดุ (เชื่อมต่อ Flask backend จริง)
+ * Flask เสิร์ฟหน้านี้เอง (same-origin) จึงเรียก API ผ่าน fetch() ธรรมดา
+ * และใช้ cookie session ของ Flask แทน sessionToken/JSONP แบบเดิม
+ * ===================================================================== */
+
+// ตรงกับ STATUSES ใน app.py / Code_2.gs เป๊ะๆ — ห้ามแก้ชื่อสถานะ เพราะ backend ตรวจสอบตรงตัว
+const STATUS_FLOW = ['รอติดตาม', 'กำลังติดตาม', 'ติดต่อได้แล้ว', 'ปิดเรื่อง'];
+const STATUS_COLORS = {
+  'รอติดตาม': { bg: '#EFEDEC', color: '#5A5450' },
+  'กำลังติดตาม': { bg: '#FCEFDB', color: '#B5730A' },
+  'ติดต่อได้แล้ว': { bg: '#DDEAFB', color: '#1E5FA8' },
+  'ปิดเรื่อง': { bg: '#DFF1E1', color: '#2E7D32' },
+};
+const DONUT_COLORS = { 'รอติดตาม': '#A39C99', 'กำลังติดตาม': '#EE9E3A', 'ติดต่อได้แล้ว': '#3B82D6', 'ปิดเรื่อง': '#2E7D32' };
+
+// ตรงกับ CONFIG.CHANNELS ใน Code_2.gs — แก้เฉพาะจุดที่โค้ดเดิมมี stray comma (ช่องว่าง undefined)
+// และสะกด "whatapp" ใหม่เป็น "WhatsApp" เฉพาะฝั่งหน้าเว็บนี้ (ไม่แตะ Apps Script เดิม)
+const CHANNEL_OPTIONS = ['LINE', 'Facebook Messenger', 'WhatsApp', 'โทรศัพท์', 'อื่นๆ'];
+const CHANNEL_COLORS = { 'LINE': '#2E7D32', 'Facebook Messenger': '#1E5FA8', 'WhatsApp': '#2E7D32', 'โทรศัพท์': '#B5730A', 'อื่นๆ': '#5A5450' };
+
+// ตรงกับ CONFIG.COMPANIES ใน Code_2.gs
+const COMPANY_OPTIONS = ['Lazada', 'Flash', 'Kerry', 'J&T', 'Shopee', 'Thaipost', 'อื่นๆ'];
+const COMPANY_COLORS = { 'Lazada': '#D6201F', 'Flash': '#B5730A', 'J&T': '#1E5FA8', 'Shopee': '#EE5A2C', 'Kerry': '#2E7D32', 'Thaipost': '#5A5450' };
+
+const THAI_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+
+// ===================== fetch() helpers (same-origin, ใช้ cookie session ของ Flask) =====================
+function qs(params) {
+  const p = new URLSearchParams();
+  Object.keys(params || {}).forEach((k) => {
+    const v = params[k];
+    if (v !== undefined && v !== null && v !== '') p.set(k, v);
+  });
+  const s = p.toString();
+  return s ? '?' + s : '';
+}
+
+async function apiRequest(method, path, body) {
+  const opts = { method, credentials: 'same-origin', headers: {} };
+  if (body !== undefined) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  let res;
+  try {
+    res = await fetch(path, opts);
+  } catch (e) {
+    throw new Error('เชื่อมต่อเซิร์ฟเวอร์ไม่สำเร็จ ตรวจสอบอินเทอร์เน็ต');
+  }
+  let data;
+  try {
+    data = await res.json();
+  } catch (e) {
+    throw new Error('เซิร์ฟเวอร์ตอบกลับไม่ถูกต้อง (' + res.status + ')');
+  }
+  data.__status = res.status;
+  return data;
+}
+function apiGet(path, params) { return apiRequest('GET', path + qs(params)); }
+function apiPost(path, body) { return apiRequest('POST', path, body || {}); }
+function apiPatch(path, body) { return apiRequest('PATCH', path, body || {}); }
+function apiDelete(path) { return apiRequest('DELETE', path); }
+
+function esc(v) {
+  if (v === null || v === undefined) return '';
+  return String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// yyyy-MM-dd HH:mm:ss (หรือ yyyy-MM-dd) -> "18 ส.ค. 2569" (พ.ศ.)
+function fmtDateThai(str) {
+  if (!str) return '';
+  const m = String(str).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return String(str);
+  const y = parseInt(m[1], 10) + 543;
+  const mo = parseInt(m[2], 10) - 1;
+  const d = parseInt(m[3], 10);
+  return d + ' ' + (THAI_MONTHS[mo] || '') + ' ' + y;
+}
+function fmtDateTimeThai(str) {
+  if (!str) return '';
+  const m = String(str).match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}:\d{2})/);
+  if (!m) return fmtDateThai(str);
+  return fmtDateThai(str) + ' ' + m[4] + ' น.';
+}
+function todayISO() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function daysAgoISO(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+// ===================== App state =====================
+const state = {
+  view: 'search', // search | report | staffLogin | staff
+  loading: false,
+  toast: null,
+  booting: true, // true จนกว่าจะเช็ค /api/me เสร็จรอบแรก
+
+  // auth
+  auth: null, // { username, nickname, role } — sessionToken เดิมถูกแทนด้วย cookie session ของ Flask
+
+  // public search
+  searchResult: null, searchError: null, searched: false, searchLoading: false,
+
+  // public / staff report form
+  reportOpen: false, // when true inside staff view, shows the report form as a modal
+  reportSubmitting: false, reportSubmitted: false, reportError: null, newTicketId: '', reportMatched: false,
+
+  // staff
+  staffPage: 'dashboard', // dashboard | cases
+  cases: [], casesLoaded: false, casesLoading: false, casesError: null,
+  reportRange: 'week', reportFrom: '', reportTo: '',
+  reportStatusFilter: [],
+  dashboardFilter: null, // {type, value}
+  selectedTicket: null,
+  exportBusy: false,
+
+  users: [], usersLoaded: false, usersLoading: false,
+  userFormOpen: false, userFormError: null, userFormBusy: false,
+};
+
+function setState(patch) { Object.assign(state, patch); render(); }
+function showToast(msg) {
+  state.toast = msg; render();
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => { state.toast = null; render(); }, 2600);
+}
+
+// ===================== Actions =====================
+function goSearch() { setState({ view: 'search', searchResult: null, searched: false, searchError: null, reportOpen: false }); }
+function goReport() { setState({ view: 'report', reportSubmitted: false, reportError: null }); }
+function goStaffLogin() { setState({ view: 'staffLogin' }); }
+
+async function doLogin() {
+  const username = document.getElementById('loginUsername').value.trim();
+  const password = document.getElementById('loginPassword').value;
+  if (!username || !password) { showToast('กรุณากรอกชื่อผู้ใช้และรหัสผ่าน'); return; }
+  setState({ loading: true });
+  try {
+    const res = await apiPost('/api/login', { username, password });
+    if (!res.ok) { setState({ loading: false }); showToast(res.error || 'เข้าสู่ระบบไม่สำเร็จ'); return; }
+    setState({
+      loading: false, view: 'staff', staffPage: 'dashboard',
+      auth: { username: res.username, nickname: res.nickname, role: res.role },
+      cases: [], casesLoaded: false, users: [], usersLoaded: false,
+    });
+    loadCases();
+  } catch (e) {
+    setState({ loading: false }); showToast(e.message || 'เข้าสู่ระบบไม่สำเร็จ');
+  }
+}
+
+async function doLogout() {
+  apiPost('/api/logout').catch(() => {});
+  setState({ view: 'search', auth: null, cases: [], casesLoaded: false, users: [], usersLoaded: false, selectedTicket: null });
+}
+
+// ถ้า session หมดอายุระหว่างใช้งาน (คุกกี้หมดอายุ/ถูกล้าง) ให้เด้งกลับหน้า login พร้อม toast
+function handleAuthExpired(res) {
+  if (res && res.__status === 401) {
+    setState({ view: 'staffLogin', auth: null });
+    showToast(res.error || 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');
+    return true;
+  }
+  return false;
+}
+
+async function onSearch() {
+  const q = document.getElementById('searchQuery').value.trim();
+  if (!q) { setState({ searchError: 'กรุณากรอกเลขพัสดุหรือเลขแจ้งเรื่อง', searchResult: null, searched: false }); return; }
+  setState({ searchLoading: true, searchError: null });
+  try {
+    const res = await apiGet('/api/search', { q });
+    if (!res.ok) { setState({ searchLoading: false, searchResult: null, searched: true, searchError: null }); return; }
+    setState({ searchLoading: false, searchResult: res.case, searched: true, searchError: null });
+  } catch (e) {
+    setState({ searchLoading: false, searchError: e.message || 'ค้นหาไม่สำเร็จ ลองใหม่อีกครั้ง' });
+  }
+}
+
+async function onSubmitReport() {
+  const parcelNo = document.getElementById('reportParcelCode').value.trim();
+  const company = document.getElementById('reportCompany').value;
+  const name = document.getElementById('reportName').value.trim();
+  const phone = document.getElementById('reportPhone').value.trim();
+  const detail = document.getElementById('reportDetail').value.trim();
+  if (!parcelNo) { setState({ reportError: 'กรุณากรอกเลขพัสดุ' }); return; }
+  if (!name || !phone) { setState({ reportError: 'กรุณากรอกชื่อและเบอร์โทรติดต่อกลับ' }); return; }
+  setState({ reportSubmitting: true, reportError: null });
+  try {
+    const res = await apiPost('/api/complaints', { parcelNo, company, name, phone, detail });
+    if (!res.ok) { setState({ reportSubmitting: false, reportError: res.error || 'ส่งเรื่องไม่สำเร็จ' }); return; }
+    setState({
+      reportSubmitting: false, reportSubmitted: true, newTicketId: res.ticketNo, reportMatched: !!res.matched,
+      reportError: null, reportOpen: false,
+    });
+    if (state.auth) loadCases(); // ถ้าเจ้าหน้าที่เป็นคนเพิ่มเรื่องจากในระบบ ให้รีเฟรชรายการ
+  } catch (e) {
+    setState({ reportSubmitting: false, reportError: e.message || 'ส่งเรื่องไม่สำเร็จ ลองใหม่อีกครั้ง' });
+  }
+}
+
+function openReportModal() { setState({ reportOpen: true, reportSubmitted: false, reportError: null }); }
+function closeReportModal() { setState({ reportOpen: false }); }
+
+function goStaffPage(page) { setState({ staffPage: page, dashboardFilter: null }); if (page === 'users' && !state.usersLoaded) loadUsers(); }
+
+async function loadCases() {
+  if (!state.auth) return;
+  setState({ casesLoading: true, casesError: null });
+  try {
+    const res = await apiGet('/api/cases');
+    if (handleAuthExpired(res)) return;
+    if (!res.ok) { setState({ casesLoading: false, casesError: res.error || 'โหลดข้อมูลไม่สำเร็จ' }); return; }
+    setState({ casesLoading: false, casesLoaded: true, cases: res.cases || [] });
+  } catch (e) {
+    setState({ casesLoading: false, casesError: e.message || 'โหลดข้อมูลไม่สำเร็จ' });
+  }
+}
+
+async function loadUsers() {
+  if (!state.auth || state.auth.role !== 'admin') return;
+  setState({ usersLoading: true });
+  try {
+    const res = await apiGet('/api/users');
+    if (handleAuthExpired(res)) return;
+    if (!res.ok) { setState({ usersLoading: false }); showToast(res.error || 'โหลดผู้ใช้งานไม่สำเร็จ'); return; }
+    setState({ usersLoading: false, usersLoaded: true, users: res.users || [] });
+  } catch (e) {
+    setState({ usersLoading: false }); showToast(e.message || 'โหลดผู้ใช้งานไม่สำเร็จ');
+  }
+}
+
+function setReportRange(r) { setState({ reportRange: r }); }
+function onReportFromChange() { setState({ reportFrom: document.getElementById('reportFromInput').value }); }
+function onReportToChange() { setState({ reportTo: document.getElementById('reportToInput').value }); }
+function toggleReportStatus(status) {
+  const cur = state.reportStatusFilter;
+  const next = cur.includes(status) ? cur.filter((s) => s !== status) : [...cur, status];
+  setState({ reportStatusFilter: next });
+}
+function selectAllReportStatus() { setState({ reportStatusFilter: STATUS_FLOW.slice() }); }
+function toggleDashboardFilter(type, value) {
+  const cur = state.dashboardFilter;
+  const isSame = cur && cur.type === type && cur.value === value;
+  setState({ dashboardFilter: isSame ? null : { type, value } });
+}
+function clearDashboardFilter() { setState({ dashboardFilter: null, reportStatusFilter: [] }); }
+
+function openCase(ticketNo) { setState({ selectedTicket: ticketNo }); }
+function closeCase() { setState({ selectedTicket: null }); }
+function stopProp(ev) { ev.stopPropagation(); }
+
+async function setCaseStatus(ticketNo, status) {
+  if (!state.auth) return;
+  setState({ loading: true });
+  try {
+    const res = await apiPatch('/api/cases/' + encodeURIComponent(ticketNo), { status });
+    if (handleAuthExpired(res)) return;
+    setState({ loading: false });
+    if (!res.ok) { showToast(res.error || 'อัปเดตสถานะไม่สำเร็จ'); return; }
+    showToast('อัปเดตสถานะแล้ว');
+    await loadCases();
+  } catch (e) {
+    setState({ loading: false }); showToast(e.message || 'อัปเดตสถานะไม่สำเร็จ');
+  }
+}
+
+// ส่งออก Excel: /api/export.xlsx ใช้ cookie session เดียวกัน จึงเปิดลิงก์ตรงได้เลย ไม่ต้องขอ downloadUrl ก่อนแบบเดิม
+async function onExportExcel() {
+  if (!state.auth) return;
+  setState({ exportBusy: true });
+  try {
+    const { dateFrom, dateTo } = currentRangeDates();
+    const status = state.reportStatusFilter.length === 1 ? state.reportStatusFilter[0] : '';
+    const url = '/api/export.xlsx' + qs({ dateFrom, dateTo, status });
+    window.open(url, '_blank');
+  } finally {
+    setState({ exportBusy: false });
+  }
+}
+
+function saveDashboardImage() {
+  const el = document.getElementById('dashboardCapture');
+  if (!el || typeof window.html2canvas !== 'function') { showToast('ไม่สามารถบันทึกภาพได้ในขณะนี้'); return; }
+  window.html2canvas(el, { backgroundColor: '#F7F5F3', scale: 2 }).then((canvas) => {
+    const link = document.createElement('a');
+    link.download = 'dashboard-anousith.png';
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+  });
+}
+
+// ===================== เพิ่มผู้ใช้งาน (admin) =====================
+function openUserForm() { setState({ userFormOpen: true, userFormError: null }); }
+function closeUserForm() { setState({ userFormOpen: false, userFormError: null }); }
+async function submitUserForm() {
+  const username = document.getElementById('newUserUsername').value.trim();
+  const nickname = document.getElementById('newUserNickname').value.trim();
+  const role = document.getElementById('newUserRole').value;
+  const password = document.getElementById('newUserPassword').value;
+  if (!username || !nickname || !password) { setState({ userFormError: 'กรอกข้อมูลไม่ครบ' }); return; }
+  setState({ userFormBusy: true, userFormError: null });
+  try {
+    const res = await apiPost('/api/users', { username, nickname, role, password });
+    if (handleAuthExpired(res)) return;
+    if (!res.ok) { setState({ userFormBusy: false, userFormError: res.error || 'เพิ่มผู้ใช้งานไม่สำเร็จ' }); return; }
+    setState({ userFormBusy: false, userFormOpen: false });
+    showToast('เพิ่มผู้ใช้งานแล้ว');
+    loadUsers();
+  } catch (e) {
+    setState({ userFormBusy: false, userFormError: e.message || 'เพิ่มผู้ใช้งานไม่สำเร็จ' });
+  }
+}
+async function removeUser(username) {
+  if (!confirm('ลบผู้ใช้งาน "' + username + '" ?')) return;
+  try {
+    const res = await apiDelete('/api/users/' + encodeURIComponent(username));
+    if (handleAuthExpired(res)) return;
+    if (!res.ok) { showToast(res.error || 'ลบไม่สำเร็จ'); return; }
+    showToast('ลบผู้ใช้งานแล้ว'); loadUsers();
+  } catch (e) { showToast(e.message || 'ลบไม่สำเร็จ'); }
+}
+async function resetPassword(username) {
+  const pw = prompt('ตั้งรหัสผ่านใหม่สำหรับ "' + username + '" (อย่างน้อย 6 ตัวอักษร)');
+  if (!pw) return;
+  try {
+    const res = await apiPatch('/api/users/' + encodeURIComponent(username) + '/password', { newPassword: pw });
+    if (handleAuthExpired(res)) return;
+    if (!res.ok) { showToast(res.error || 'ตั้งรหัสผ่านไม่สำเร็จ'); return; }
+    showToast('ตั้งรหัสผ่านใหม่แล้ว');
+  } catch (e) { showToast(e.message || 'ตั้งรหัสผ่านไม่สำเร็จ'); }
+}
+
+// ===================== คำนวณช่วงวันที่จาก reportRange =====================
+function currentRangeDates() {
+  if (state.reportRange === 'custom') return { dateFrom: state.reportFrom, dateTo: state.reportTo };
+  if (state.reportRange === 'day') return { dateFrom: todayISO(), dateTo: todayISO() };
+  if (state.reportRange === 'week') return { dateFrom: daysAgoISO(6), dateTo: todayISO() };
+  if (state.reportRange === 'month') return { dateFrom: daysAgoISO(29), dateTo: todayISO() };
+  return { dateFrom: '', dateTo: '' };
+}
+
+// ===================== Derived data (เหมือน renderVals เดิม แต่ใช้ข้อมูลจริงจาก /api/cases) =====================
+function computeDerived() {
+  const { dateFrom, dateTo } = currentRangeDates();
+  const from = dateFrom ? new Date(dateFrom + ' 00:00:00') : null;
+  const to = dateTo ? new Date(dateTo + ' 23:59:59') : null;
+
+  let inRange = state.cases.filter((c) => {
+    if (!from && !to) return true;
+    const opened = new Date(c.openedAt);
+    if (from && opened < from) return false;
+    if (to && opened > to) return false;
+    return true;
+  });
+
+  const dashFilter = state.dashboardFilter;
+  const statusChipsActive = state.reportStatusFilter.length > 0;
+  const matchesFilter = (c) => {
+    if (dashFilter) {
+      if (dashFilter.type === 'status' && c.status !== dashFilter.value) return false;
+      if (dashFilter.type === 'channel' && c.lastChannel !== dashFilter.value) return false;
+      if (dashFilter.type === 'company' && c.company !== dashFilter.value) return false;
+    }
+    if (statusChipsActive && !state.reportStatusFilter.includes(c.status)) return false;
+    return true;
+  };
+  const filtered = inRange.filter(matchesFilter);
+
+  const totalCases = filtered.length;
+  const closedCases = filtered.filter((c) => c.status === 'ปิดเรื่อง').length;
+  const openCases = totalCases - closedCases;
+  const closedWithDates = filtered.filter((c) => c.status === 'ปิดเรื่อง' && c.closedAt && c.openedAt);
+  const avgCloseDays = closedWithDates.length
+    ? (closedWithDates.reduce((sum, c) => sum + (new Date(c.closedAt) - new Date(c.openedAt)) / 86400000, 0) / closedWithDates.length).toFixed(1)
+    : null;
+
+  let cursor = 0;
+  const totalAll = filtered.length || 1;
+  const statusBars = STATUS_FLOW.map((label) => {
+    const count = filtered.filter((c) => c.status === label).length;
+    const pct = (count / totalAll) * 100;
+    const start = cursor; cursor += pct;
+    const active = dashFilter && dashFilter.type === 'status' && dashFilter.value === label;
+    return { label, count, start, end: cursor, color: DONUT_COLORS[label], dim: (dashFilter && !active) ? '0.4' : '1' };
+  });
+  const donutGradient = statusBars.map((b) => `${b.color} ${b.start}% ${b.end}%`).join(', ');
+
+  const channelCounts = {};
+  filtered.forEach((c) => { if (c.lastChannel) channelCounts[c.lastChannel] = (channelCounts[c.lastChannel] || 0) + 1; });
+  const maxChannel = Math.max(1, ...Object.values(channelCounts), 0);
+  const channelBars = Object.keys(channelCounts).map((label) => {
+    const count = channelCounts[label];
+    const active = dashFilter && dashFilter.type === 'channel' && dashFilter.value === label;
+    return { label, count, pct: Math.round((count / maxChannel) * 100) + '%', color: CHANNEL_COLORS[label] || '#8A8380', dim: (dashFilter && !active) ? '0.4' : '1' };
+  });
+
+  const companyCounts = {};
+  filtered.forEach((c) => { if (c.company) companyCounts[c.company] = (companyCounts[c.company] || 0) + 1; });
+  const maxCompany = Math.max(1, ...Object.values(companyCounts), 0);
+  const companyBars = Object.keys(companyCounts).map((label) => {
+    const count = companyCounts[label];
+    const active = dashFilter && dashFilter.type === 'company' && dashFilter.value === label;
+    return { label, count, pct: Math.round((count / maxCompany) * 100) + '%', color: COMPANY_COLORS[label] || '#8A8380', dim: (dashFilter && !active) ? '0.4' : '1' };
+  });
+
+  const staffNames = Array.from(new Set(filtered.map((c) => c.lastStaff).filter(Boolean)));
+  const staffStats = staffNames.map((name) => {
+    const mine = filtered.filter((c) => c.lastStaff === name);
+    const closed = mine.filter((c) => c.status === 'ปิดเรื่อง');
+    const closedD = closed.filter((c) => c.closedAt && c.openedAt);
+    const avg = closedD.length
+      ? (closedD.reduce((s, c) => s + (new Date(c.closedAt) - new Date(c.openedAt)) / 86400000, 0) / closedD.length).toFixed(1) + ' วัน'
+      : '-';
+    return { name, total: mine.length, closed: closed.length, avgTime: avg };
+  });
+
+  const casesSorted = filtered.slice().sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+
+  return {
+    totalCases, closedCases, openCases, avgCloseDays,
+    statusBars, donutGradient, channelBars, companyBars, staffStats, casesSorted,
+    dashFilterActive: !!dashFilter || statusChipsActive,
+    dashFilterLabel: dashFilter ? dashFilter.value : state.reportStatusFilter.join(', '),
+  };
+}
+
+// ===================== Render =====================
+function render() {
+  const root = document.getElementById('app');
+  if (state.booting) { root.innerHTML = '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;color:#8A8380;font-size:14px">กำลังโหลด...</div>'; return; }
+  let html = '';
+  if (state.view === 'search' || state.view === 'report') html = renderPublic();
+  else if (state.view === 'staffLogin') html = renderStaffLogin();
+  else if (state.view === 'staff') html = renderStaff();
+  root.innerHTML = html + renderToast();
+}
+
+const LOGO_HTML = '<span style="font-family:\'Prompt\',sans-serif;font-weight:700;font-size:18px;color:#D6201F;letter-spacing:.3px">ANOUSITH <span style="color:#221F1F;font-weight:600;font-size:13px;vertical-align:1px">EXPRESS</span></span>';
+
+function renderToast() {
+  if (!state.toast) return '';
+  return `<div class="fadein" style="position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#221F1F;color:#fff;padding:12px 22px;border-radius:6px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,0.3);z-index:200">${esc(state.toast)}</div>`;
+}
+
+function publicHeader() {
+  const isSearch = state.view === 'search';
+  const isReport = state.view === 'report';
+  return `
+  <header style="display:flex;align-items:center;justify-content:space-between;padding:14px 20px;background:#FFFFFF;border-bottom:3px solid #D6201F;gap:12px;flex-wrap:wrap">
+    <div style="display:flex;align-items:center;gap:10px">
+      ${LOGO_HTML}
+      <span style="font-size:13px;font-weight:600;color:#726B68;border-left:1px solid #E7E2DF;padding-left:10px">อนุสิต - หนองคาย</span>
+    </div>
+    <nav style="display:flex;align-items:center;gap:10px;font-size:14px;font-weight:600;flex-wrap:wrap">
+      <span class="clickable" onclick="goSearch()" style="color:${isSearch ? '#D6201F' : '#221F1F'};padding:6px 4px">ค้นหาพัสดุ</span>
+      <span class="clickable" onclick="goReport()" style="color:${isReport ? '#D6201F' : '#221F1F'};padding:6px 4px">แจ้งเรื่องพัสดุ</span>
+      <span class="clickable" onclick="goStaffLogin()" style="padding:8px 16px;background:#D6201F;color:#fff;border-radius:3px">พนักงาน</span>
+    </nav>
+  </header>`;
+}
+
+function publicFooter() {
+  return `<footer style="background:#221F1F;color:#B7B2AF;padding:26px 40px;font-size:13px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px">
+    <span>© 2569 บริษัท อนุสิต เอ็กซ์เพรส จำกัด — สาขาหนองคาย</span>
+    <span>โทร 042-000-000 • เปิดทำการ 08:00–18:00 น.</span>
+  </footer>`;
+}
+
+function statusStepsHtml(status) {
+  const curIdx = STATUS_FLOW.indexOf(status);
+  return `<div style="display:flex;gap:6px;flex-wrap:wrap">` + STATUS_FLOW.map((label, i) => {
+    const reached = i <= curIdx;
+    const c = STATUS_COLORS[label];
+    const bg = reached ? c.bg : '#F7F5F3';
+    const color = reached ? c.color : '#C4BEBB';
+    return `<div style="padding:6px 12px;border-radius:20px;font-size:11.5px;font-weight:700;background:${bg};color:${color};border:1px solid ${reached ? 'transparent' : '#E7E2DF'}">${esc(label)}</div>`;
+  }).join('') + `</div>`;
+}
+
+function renderPublic() {
+  const s = state;
+  let body = '';
+
+  if (s.view === 'search') {
+    body += `
+    <section style="background:linear-gradient(180deg,#D6201F,#B3160F);padding:22px 16px 34px;text-align:center">
+      <h1 style="font-family:'Prompt',sans-serif;color:#fff;font-size:clamp(18px,3.5vw,26px);margin:0 0 6px;letter-spacing:.3px">ค้นหาพัสดุ / เรื่องร้องเรียน</h1>
+      <p style="color:#F8D9D8;font-size:13px;margin:0 0 16px">กรอกเลขพัสดุ หรือเลขแจ้งเรื่อง (RQ...) เพื่อตรวจสอบสถานะล่าสุด</p>
+      <div style="max-width:480px;margin:0 auto;display:flex;flex-direction:column;gap:8px;background:#fff;padding:8px;border-radius:8px;box-shadow:0 12px 30px rgba(0,0,0,0.18)">
+        <input id="searchQuery" placeholder="เลขพัสดุ หรือเลขแจ้งเรื่อง" onkeydown="if(event.key==='Enter')onSearch()" style="border:1px solid #EEEAE8;border-radius:5px;outline:none;padding:13px 14px;font-size:15px;color:#221F1F;width:100%">
+        <button onclick="onSearch()" style="background:#221F1F;color:#fff;border:none;padding:14px;border-radius:5px;font-size:15px;font-weight:700;cursor:pointer;width:100%">${s.searchLoading ? 'กำลังค้นหา...' : 'ค้นหา'}</button>
+      </div>
+      ${s.searchError ? `<div style="max-width:520px;margin:10px auto 0;color:#FBD7D6;font-size:13px;font-weight:600">${esc(s.searchError)}</div>` : ''}
+    </section>
+    <section style="max-width:900px;margin:-18px auto 0;padding:0 16px 24px;position:relative">`;
+
+    if (s.searched && !s.searchResult) {
+      body += `
+      <div style="background:#fff;border-radius:8px;box-shadow:0 10px 26px rgba(0,0,0,0.08);padding:28px 22px;text-align:center" class="fadein">
+        <div style="font-size:16px;font-weight:700;color:#B3160F;margin-bottom:6px">ไม่พบข้อมูล</div>
+        <div style="font-size:13.5px;color:#726B68">ไม่พบเลขพัสดุ/เลขแจ้งเรื่องนี้ในระบบ (ระบบค้นหาได้เฉพาะพัสดุที่มีการแจ้งเรื่องร้องเรียนแล้วเท่านั้น) กรุณาแจ้งเรื่องเพื่อให้เจ้าหน้าที่ช่วยตามหา</div>
+        <div class="clickable" onclick="goReport()" style="margin-top:16px;display:inline-block;background:#D6201F;color:#fff;padding:11px 22px;border-radius:4px;font-weight:700;font-size:14px">แจ้งเรื่องตามหาพัสดุ</div>
+      </div>`;
+    }
+
+    if (s.searchResult) {
+      const r = s.searchResult;
+      const hasPhoto = !!r.photoUrl;
+      body += `
+      <div style="background:#fff;border-radius:8px;box-shadow:0 10px 26px rgba(0,0,0,0.08);overflow:hidden" class="fadein">
+        <div style="background:#221F1F;color:#fff;padding:16px 20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+          <div>
+            <div style="font-size:12px;color:#B7B2AF;letter-spacing:.5px">เลขพัสดุ · ${esc(r.company || '-')} · เลขแจ้งเรื่อง ${esc(r.ticketNo)}</div>
+            <div style="font-family:'Prompt',sans-serif;font-size:18px;font-weight:700;word-break:break-all">${esc(r.parcelNo)}</div>
+          </div>
+          <div style="background:#D6201F;padding:6px 14px;border-radius:20px;font-size:13px;font-weight:700;white-space:nowrap">${esc(r.status)}</div>
+        </div>
+        <div style="padding:16px;display:grid;grid-template-columns:1fr 1fr 0.9fr;gap:16px">
+          <div>
+            <div style="font-size:13px;font-weight:700;margin-bottom:10px;font-family:'Prompt',sans-serif">รายละเอียด</div>
+            <div style="display:flex;flex-direction:column;gap:8px;font-size:12.5px">
+              <div style="display:flex;justify-content:space-between;gap:8px;border-bottom:1px solid #F3F0EE;padding-bottom:7px"><span style="color:#8A8380">วันที่แจ้งเรื่อง</span><span style="font-weight:600;text-align:right">${esc(fmtDateThai(r.openedAt))}</span></div>
+              <div style="display:flex;justify-content:space-between;gap:8px;border-bottom:1px solid #F3F0EE;padding-bottom:7px"><span style="color:#8A8380">อัปเดตล่าสุด</span><span style="font-weight:600;text-align:right">${esc(fmtDateTimeThai(r.updatedAt))}</span></div>
+              ${r.closedAt ? `<div style="display:flex;justify-content:space-between;gap:8px;border-bottom:1px solid #F3F0EE;padding-bottom:7px"><span style="color:#8A8380">ปิดเรื่องเมื่อ</span><span style="font-weight:600;text-align:right">${esc(fmtDateThai(r.closedAt))}</span></div>` : ''}
+              ${r.detail ? `<div><span style="color:#8A8380">รายละเอียด</span><div style="margin-top:3px;background:#F7F5F3;padding:7px;border-radius:5px">${esc(r.detail)}</div></div>` : ''}
+            </div>
+          </div>
+          <div>
+            <div style="font-size:13px;font-weight:700;margin-bottom:10px;font-family:'Prompt',sans-serif">ความคืบหน้า</div>
+            ${statusStepsHtml(r.status)}
+          </div>
+          <div>
+            <div style="font-size:13px;font-weight:700;margin-bottom:10px;font-family:'Prompt',sans-serif">รูปภาพประกอบ</div>
+            <div style="border-radius:6px;overflow:hidden;border:1px solid #E7E2DF">
+              ${hasPhoto ? `
+                <img src="${esc(r.photoUrl)}" alt="รูปพัสดุ ${esc(r.parcelNo)}" style="width:100%;display:block;aspect-ratio:4/3;object-fit:cover;background:#F1EDEB" onerror="this.style.display='none'">
+                <a href="${esc(r.photoUrl)}" target="_blank" rel="noopener" style="display:block;text-align:center;padding:6px;font-size:11px;font-weight:600;background:#F7F5F3">ดูรูปภาพขนาดปกติ</a>
+              ` : `
+                <div style="aspect-ratio:4/3;background:repeating-linear-gradient(45deg,#F1EDEB,#F1EDEB 10px,#E7E2DF 10px,#E7E2DF 20px);display:flex;align-items:center;justify-content:center;text-align:center;padding:10px">
+                  <span style="font-family:monospace;font-size:11px;color:#8A8380">[ ไม่มีรูปภาพประกอบ ]</span>
+                </div>`}
+            </div>
+          </div>
+        </div>
+      </div>`;
+    }
+    body += `</section>`;
+  }
+
+  if (s.view === 'report') {
+    body += renderReportForm(false);
+  }
+
+  return `<div>${publicHeader()}${body}${publicFooter()}</div>`;
+}
+
+function renderReportForm(insideModal) {
+  const s = state;
+  if (s.reportSubmitted && !insideModal) {
+    return `
+    <section style="max-width:640px;margin:0 auto;padding:24px 24px 32px">
+      <div style="background:#fff;border-radius:8px;box-shadow:0 10px 26px rgba(0,0,0,0.08);padding:40px;text-align:center" class="fadein">
+        <div style="width:52px;height:52px;border-radius:50%;background:#D6201F;color:#fff;display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:700;margin:0 auto 16px">✓</div>
+        <div style="font-size:17px;font-weight:700;margin-bottom:6px">${s.reportMatched ? 'บันทึกข้อมูลเพิ่มเติมในเรื่องเดิมแล้ว' : 'รับเรื่องแล้ว'}</div>
+        <div style="font-size:14px;color:#726B68;margin-bottom:20px">หมายเลขคำร้อง <b style="color:#221F1F">${esc(s.newTicketId)}</b> — เจ้าหน้าที่จะติดต่อกลับโดยเร็วที่สุด</div>
+        <div class="clickable" onclick="goSearch()" style="display:inline-block;border:1px solid #D6201F;color:#D6201F;padding:9px 22px;border-radius:4px;font-weight:700;font-size:14px">กลับหน้าค้นหาพัสดุ</div>
+      </div>
+    </section>`;
+  }
+  const form = `
+    <div style="background:#fff;border-radius:8px;${insideModal ? '' : 'box-shadow:0 10px 26px rgba(0,0,0,0.08);'}padding:20px;display:flex;flex-direction:column;gap:12px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div>
+          <label style="font-size:12.5px;font-weight:600;color:#4A4442;display:block;margin-bottom:5px">เลขพัสดุ (บังคับ)</label>
+          <input id="reportParcelCode" placeholder="เช่น TH40058N04DJ8G" style="width:100%;padding:9px 12px;border:1px solid #DCD6D3;border-radius:4px;font-size:13.5px">
+        </div>
+        <div>
+          <label style="font-size:12.5px;font-weight:600;color:#4A4442;display:block;margin-bottom:5px">บริษัทขนส่ง</label>
+          <select id="reportCompany" style="width:100%;padding:9px 12px;border:1px solid #DCD6D3;border-radius:4px;font-size:13.5px;background:#fff">
+            <option value="">เลือกบริษัทขนส่ง</option>
+            ${COMPANY_OPTIONS.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      ${s.reportError ? `<div style="color:#B3160F;font-size:12px;font-weight:600;margin-top:-6px">${esc(s.reportError)}</div>` : ''}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div>
+          <label style="font-size:12.5px;font-weight:600;color:#4A4442;display:block;margin-bottom:5px">ชื่อผู้แจ้ง</label>
+          <input id="reportName" placeholder="ชื่อ-นามสกุล" style="width:100%;padding:9px 12px;border:1px solid #DCD6D3;border-radius:4px;font-size:13.5px">
+        </div>
+        <div>
+          <label style="font-size:12.5px;font-weight:600;color:#4A4442;display:block;margin-bottom:5px">เบอร์โทรติดต่อ/WhatsApp</label>
+          <input id="reportPhone" placeholder="08X-XXX-XXXX" style="width:100%;padding:9px 12px;border:1px solid #DCD6D3;border-radius:4px;font-size:13.5px">
+        </div>
+      </div>
+      <div>
+        <label style="font-size:12.5px;font-weight:600;color:#4A4442;display:block;margin-bottom:5px">รายละเอียดปัญหา</label>
+        <textarea id="reportDetail" placeholder="อธิบายปัญหา เช่น พัสดุล่าช้า ยังไม่ได้รับ ฯลฯ" rows="3" style="width:100%;padding:9px 12px;border:1px solid #DCD6D3;border-radius:4px;font-size:13.5px;resize:vertical"></textarea>
+      </div>
+      <button onclick="onSubmitReport()" style="margin-top:2px;background:#D6201F;color:#fff;border:none;padding:11px;border-radius:4px;font-size:14px;font-weight:700;cursor:pointer">${s.reportSubmitting ? 'กำลังส่ง...' : 'ส่งเรื่องร้องเรียน'}</button>
+    </div>`;
+  if (insideModal) return form;
+  return `
+  <section style="max-width:640px;margin:0 auto;padding:24px 24px 32px">
+    <h2 style="font-family:'Prompt',sans-serif;font-size:20px;margin:0 0 4px">แจ้งเรื่องเพื่อตามหาพัสดุ</h2>
+    <p style="color:#726B68;font-size:13px;margin:0 0 16px">แจ้งปัญหาพัสดุล่าช้า/สูญหาย เจ้าหน้าที่จะติดต่อกลับโดยเร็วที่สุด</p>
+    ${form}
+  </section>`;
+}
+
+function renderStaffLogin() {
+  return `
+  <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,#221F1F,#3A3432)">
+    <div style="background:#fff;border-radius:10px;padding:44px;width:380px;max-width:90vw;box-shadow:0 20px 50px rgba(0,0,0,0.4)">
+      <div style="text-align:center;margin-bottom:26px">${LOGO_HTML}</div>
+      <div style="text-align:center;font-size:13px;color:#8A8380;margin-bottom:20px">เข้าสู่ระบบสำหรับพนักงาน</div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <input id="loginUsername" placeholder="ชื่อผู้ใช้" onkeydown="if(event.key==='Enter')document.getElementById('loginPassword').focus()" style="width:100%;padding:11px 14px;border:1px solid #DCD6D3;border-radius:5px;font-size:14px">
+        <input id="loginPassword" type="password" placeholder="รหัสผ่าน" onkeydown="if(event.key==='Enter')doLogin()" style="width:100%;padding:11px 14px;border:1px solid #DCD6D3;border-radius:5px;font-size:14px">
+        <button onclick="doLogin()" style="background:#D6201F;color:#fff;border:none;padding:12px;border-radius:5px;font-size:14px;font-weight:700;cursor:pointer">${state.loading ? 'กำลังเข้าสู่ระบบ...' : 'เข้าสู่ระบบ'}</button>
+      </div>
+      <div class="clickable" onclick="goSearch()" style="text-align:center;margin-top:22px;font-size:13px;color:#8A8380">← กลับหน้าหลัก</div>
+    </div>
+  </div>`;
+}
+
+function renderStaff() {
+  const s = state;
+  const isAdmin = s.auth && s.auth.role === 'admin';
+  const roleLabel = isAdmin ? 'แอดมิน' : 'พนักงาน';
+  const pageTitles = { dashboard: 'แดชบอร์ด', cases: 'เคสร้องเรียน', users: 'ผู้ใช้งาน' };
+
+  let pageBody = '';
+  if (s.casesLoading && !s.casesLoaded) {
+    pageBody = `<div style="padding:40px;text-align:center;color:#8A8380">กำลังโหลดข้อมูล...</div>`;
+  } else if (s.casesError) {
+    pageBody = `<div style="padding:40px;text-align:center;color:#B3160F">${esc(s.casesError)} <span class="clickable" onclick="loadCases()" style="text-decoration:underline">ลองใหม่</span></div>`;
+  } else if (s.staffPage === 'dashboard') {
+    pageBody = renderDashboard();
+  } else if (s.staffPage === 'cases') {
+    pageBody = renderCases();
+  } else if (s.staffPage === 'users') {
+    pageBody = renderUsers();
+  }
+
+  return `
+  <div style="display:flex;min-height:100vh">
+    <aside style="width:220px;background:#221F1F;color:#fff;flex-shrink:0;display:flex;flex-direction:column">
+      <div style="padding:20px 20px;border-bottom:1px solid #3A3432">
+        <span style="font-family:'Prompt',sans-serif;font-weight:700;font-size:15px;color:#fff">ANOUSITH <span style="font-weight:500;font-size:11px">EXPRESS</span></span>
+      </div>
+      <nav style="padding:14px;display:flex;flex-direction:column;gap:4px;flex:1">
+        <div class="clickable" onclick="goStaffPage('dashboard')" style="padding:11px 14px;border-radius:5px;font-size:14px;font-weight:600;background:${s.staffPage === 'dashboard' ? '#D6201F' : 'transparent'};color:${s.staffPage === 'dashboard' ? '#fff' : '#D9D4D1'}">แดชบอร์ด</div>
+        <div class="clickable" onclick="goStaffPage('cases')" style="padding:11px 14px;border-radius:5px;font-size:14px;font-weight:600;background:${s.staffPage === 'cases' ? '#D6201F' : 'transparent'};color:${s.staffPage === 'cases' ? '#fff' : '#D9D4D1'}">เคสร้องเรียน</div>
+        ${isAdmin ? `<div class="clickable" onclick="goStaffPage('users')" style="padding:11px 14px;border-radius:5px;font-size:14px;font-weight:600;background:${s.staffPage === 'users' ? '#D6201F' : 'transparent'};color:${s.staffPage === 'users' ? '#fff' : '#D9D4D1'}">ผู้ใช้งาน</div>` : ''}
+      </nav>
+      <div class="clickable" onclick="doLogout()" style="padding:16px 20px;border-top:1px solid #3A3432;font-size:13px;color:#B7B2AF">← ออกจากระบบ</div>
+    </aside>
+    <div style="flex:1;background:#F7F5F3;min-width:0">
+      <header style="background:#fff;border-bottom:1px solid #EEEAE8;padding:16px 32px;display:flex;justify-content:space-between;align-items:center">
+        <div style="font-family:'Prompt',sans-serif;font-size:19px;font-weight:600">${pageTitles[s.staffPage]}</div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:12px;background:#FBEAE9;color:#B3160F;padding:5px 12px;border-radius:20px;font-weight:700">${esc(roleLabel)} · ${esc(s.auth ? s.auth.nickname : '')}</span>
+          <div style="width:34px;height:34px;border-radius:50%;background:#221F1F;color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700">${esc((s.auth && s.auth.nickname ? s.auth.nickname[0] : 'U'))}</div>
+        </div>
+      </header>
+      <div style="padding:28px 32px">${pageBody}</div>
+    </div>
+  </div>
+  ${s.selectedTicket ? renderCaseModal() : ''}
+  ${s.reportOpen ? renderReportModal() : ''}
+  ${s.userFormOpen ? renderUserFormModal() : ''}`;
+}
+
+function renderDashboard() {
+  const s = state;
+  const d = computeDerived();
+  const rangeDefs = [{ k: 'day', l: 'วันนี้' }, { k: 'week', l: '7 วันล่าสุด' }, { k: 'month', l: '30 วันล่าสุด' }, { k: 'custom', l: 'เลือกวันที่' }];
+  const isAdmin = s.auth && s.auth.role === 'admin';
+
+  const kpis = [
+    { label: 'เรื่องทั้งหมด', value: d.totalCases, color: '#221F1F' },
+    { label: 'กำลังดำเนินการ', value: d.openCases, color: '#B5730A' },
+    { label: 'ปิดเรื่องแล้ว', value: d.closedCases, color: '#2E7D32' },
+    { label: 'เวลาเฉลี่ยปิดเรื่อง', value: d.avgCloseDays !== null ? d.avgCloseDays + ' วัน' : '-', color: '#221F1F' },
+  ];
+
+  return `
+  <div id="dashboardCapture" style="display:flex;flex-direction:column;gap:10px;background:#F7F5F3">
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      ${rangeDefs.map((r) => `<div class="clickable" onclick="setReportRange('${r.k}')" style="padding:7px 16px;border-radius:20px;font-size:13px;font-weight:600;background:${s.reportRange === r.k ? '#221F1F' : '#fff'};color:${s.reportRange === r.k ? '#fff' : '#4A4442'};border:1px solid ${s.reportRange === r.k ? '#221F1F' : '#DCD6D3'}">${r.l}</div>`).join('')}
+      ${s.reportRange === 'custom' ? `
+        <input id="reportFromInput" type="date" value="${esc(s.reportFrom)}" onchange="onReportFromChange()" style="padding:6px 8px;border:1px solid #DCD6D3;border-radius:4px;font-size:12px">
+        <input id="reportToInput" type="date" value="${esc(s.reportTo)}" onchange="onReportToChange()" style="padding:6px 8px;border:1px solid #DCD6D3;border-radius:4px;font-size:12px">
+      ` : ''}
+      <div style="flex:1"></div>
+      ${isAdmin ? `
+        <div class="clickable" onclick="selectAllReportStatus()" style="padding:7px 14px;border-radius:20px;font-size:12.5px;font-weight:600;background:#F1EDEB;color:#4A4442">เลือกทั้งหมด</div>
+        ${STATUS_FLOW.map((label) => {
+          const active = s.reportStatusFilter.includes(label);
+          const c = STATUS_COLORS[label];
+          return `<div class="clickable" onclick="toggleReportStatus('${esc(label)}')" style="padding:7px 14px;border-radius:20px;font-size:12.5px;font-weight:600;background:${active ? c.color : '#fff'};color:${active ? '#fff' : '#4A4442'};border:1px solid ${active ? c.color : '#DCD6D3'}">${label}</div>`;
+        }).join('')}
+        <div class="clickable" onclick="onExportExcel()" style="padding:7px 16px;border-radius:20px;font-size:13px;font-weight:600;background:#D6201F;color:#fff">${s.exportBusy ? '...' : '⬇ ออกรายงาน Excel'}</div>
+      ` : ''}
+      <div class="clickable" onclick="saveDashboardImage()" style="padding:7px 16px;border-radius:20px;font-size:13px;font-weight:600;background:#221F1F;color:#fff">⬇ บันทึกเป็นรูปภาพ</div>
+    </div>
+
+    ${d.dashFilterActive ? `<div style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:#4A4442">
+      <span>กำลังกรอง: <b>${esc(d.dashFilterLabel)}</b></span>
+      <span class="clickable" onclick="clearDashboardFilter()" style="color:#D6201F;font-weight:700">✕ ล้างตัวกรอง</span>
+    </div>` : ''}
+
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px">
+      ${kpis.map((k) => `<div style="background:#fff;border-radius:8px;padding:16px;box-shadow:0 2px 8px rgba(0,0,0,0.04)">
+        <div style="font-size:12px;color:#8A8380;margin-bottom:6px">${k.label}</div>
+        <div style="font-family:'Prompt',sans-serif;font-size:24px;font-weight:700;color:${k.color}">${k.value}</div>
+      </div>`).join('')}
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1.2fr 1.2fr;gap:14px">
+      <div style="background:#fff;border-radius:8px;padding:18px;box-shadow:0 2px 8px rgba(0,0,0,0.04)">
+        <div style="font-size:13.5px;font-weight:700;margin-bottom:10px;font-family:'Prompt',sans-serif">สถานะเคสทั้งหมด</div>
+        <div style="display:flex;align-items:center;gap:14px">
+          <div style="width:88px;height:88px;border-radius:50%;background:conic-gradient(${d.donutGradient || '#E7E2DF 0% 100%'});flex-shrink:0;display:flex;align-items:center;justify-content:center">
+            <div style="width:50px;height:50px;border-radius:50%;background:#fff"></div>
+          </div>
+          <div style="flex:1;min-width:0">
+            ${d.statusBars.map((b) => `<div class="clickable" onclick="toggleDashboardFilter('status','${esc(b.label)}')" style="display:flex;align-items:center;gap:6px;margin-bottom:6px;opacity:${b.dim}">
+              <span style="width:8px;height:8px;border-radius:2px;background:${b.color};flex-shrink:0"></span>
+              <span style="font-size:12px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${b.label}</span>
+              <span style="font-size:12px;font-weight:700">${b.count}</span>
+            </div>`).join('')}
+          </div>
+        </div>
+      </div>
+      <div style="background:#fff;border-radius:8px;padding:18px;box-shadow:0 2px 8px rgba(0,0,0,0.04)">
+        <div style="font-size:13.5px;font-weight:700;margin-bottom:12px;font-family:'Prompt',sans-serif">ช่องทางแจ้งเรื่อง</div>
+        ${d.channelBars.length ? d.channelBars.map((ch) => `<div class="clickable" onclick="toggleDashboardFilter('channel','${esc(ch.label)}')" style="margin-bottom:8px;opacity:${ch.dim}">
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><span style="font-weight:600">${esc(ch.label)}</span><span style="color:#8A8380">${ch.count}</span></div>
+          <div style="height:7px;background:#F1EDEB;border-radius:4px;overflow:hidden"><div style="height:100%;width:${ch.pct};background:${ch.color};border-radius:4px"></div></div>
+        </div>`).join('') : `<div style="font-size:12px;color:#A39C99">ยังไม่มีข้อมูล</div>`}
+      </div>
+      <div style="background:#fff;border-radius:8px;padding:18px;box-shadow:0 2px 8px rgba(0,0,0,0.04)">
+        <div style="font-size:13.5px;font-weight:700;margin-bottom:12px;font-family:'Prompt',sans-serif">แยกตามบริษัทขนส่ง</div>
+        ${d.companyBars.length ? d.companyBars.map((co) => `<div class="clickable" onclick="toggleDashboardFilter('company','${esc(co.label)}')" style="margin-bottom:8px;opacity:${co.dim}">
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><span style="font-weight:600">${esc(co.label)}</span><span style="color:#8A8380">${co.count}</span></div>
+          <div style="height:7px;background:#F1EDEB;border-radius:4px;overflow:hidden"><div style="height:100%;width:${co.pct};background:${co.color};border-radius:4px"></div></div>
+        </div>`).join('') : `<div style="font-size:12px;color:#A39C99">ยังไม่มีข้อมูล</div>`}
+      </div>
+    </div>
+
+    <div style="background:#fff;border-radius:8px;padding:14px 18px;box-shadow:0 2px 8px rgba(0,0,0,0.04)">
+      <div style="font-size:13.5px;font-weight:700;margin-bottom:8px;font-family:'Prompt',sans-serif">สรุปตามพนักงาน</div>
+      <table style="width:100%;font-size:12.5px">
+        <thead><tr style="text-align:left;color:#8A8380;border-bottom:1px solid #EEEAE8">
+          <th style="padding:6px;font-weight:600">พนักงาน</th><th style="padding:6px;font-weight:600">รับเคส</th><th style="padding:6px;font-weight:600">ปิดเรื่องแล้ว</th><th style="padding:6px;font-weight:600">เวลาเฉลี่ย</th>
+        </tr></thead>
+        <tbody>
+          ${d.staffStats.length ? d.staffStats.map((st) => `<tr style="border-bottom:1px solid #F3F0EE">
+            <td style="padding:8px 6px;font-weight:600">${esc(st.name)}</td><td style="padding:8px 6px">${st.total}</td><td style="padding:8px 6px">${st.closed}</td><td style="padding:8px 6px;color:#726B68">${esc(st.avgTime)}</td>
+          </tr>`).join('') : `<tr><td colspan="4" style="padding:10px 6px;color:#A39C99">ยังไม่มีเคสที่มีพนักงานดูแล</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+function renderCases() {
+  const s = state;
+  const d = computeDerived();
+  return `
+  <div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <div style="font-size:13px;color:#8A8380">ทั้งหมด ${d.casesSorted.length} เรื่อง${d.dashFilterActive ? ' (กรองอยู่)' : ''}</div>
+      <div style="display:flex;gap:10px">
+        <button onclick="openReportModal()" style="background:#D6201F;color:#fff;border:none;padding:9px 18px;border-radius:4px;font-size:13px;font-weight:700;cursor:pointer">+ เพิ่มเรื่องร้องเรียน</button>
+        <button onclick="onExportExcel()" style="background:#fff;border:1px solid #DCD6D3;padding:9px 18px;border-radius:4px;font-size:13px;font-weight:700;cursor:pointer;color:#3D3835">${s.exportBusy ? '...' : '⬇ ส่งออก Excel'}</button>
+      </div>
+    </div>
+    <div style="background:#fff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.04);overflow:auto">
+      <table style="width:100%;font-size:13px">
+        <thead><tr style="text-align:left;background:#F7F5F3;color:#8A8380">
+          <th style="padding:12px 16px;font-weight:600">เลขพัสดุ</th><th style="padding:12px 16px;font-weight:600">เลขแจ้งเรื่อง</th><th style="padding:12px 16px;font-weight:600">ผู้แจ้ง</th><th style="padding:12px 16px;font-weight:600">พนักงานดูแล</th><th style="padding:12px 16px;font-weight:600">วันที่แจ้ง</th><th style="padding:12px 16px;font-weight:600">สถานะ</th><th style="padding:12px 16px"></th>
+        </tr></thead>
+        <tbody>
+          ${d.casesSorted.length ? d.casesSorted.map((c) => {
+            const sc = STATUS_COLORS[c.status] || { bg: '#EEE', color: '#555' };
+            return `<tr style="border-top:1px solid #F3F0EE">
+              <td style="padding:12px 16px;font-weight:700">${esc(c.parcelNo)}</td>
+              <td style="padding:12px 16px;color:#726B68">${esc(c.ticketNo)}</td>
+              <td style="padding:12px 16px">${esc(c.complainantName || '-')}</td>
+              <td style="padding:12px 16px">${esc(c.lastStaff || '-')}</td>
+              <td style="padding:12px 16px;color:#726B68">${esc(fmtDateThai(c.openedAt))}</td>
+              <td style="padding:12px 16px"><span style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;background:${sc.bg};color:${sc.color}">${esc(c.status)}</span></td>
+              <td style="padding:12px 16px;text-align:right"><span class="clickable" onclick="openCase('${esc(c.ticketNo)}')" style="color:#D6201F;font-weight:700">ดู</span></td>
+            </tr>`;
+          }).join('') : `<tr><td colspan="7" style="padding:24px;text-align:center;color:#A39C99">ไม่มีเรื่องร้องเรียนในช่วงที่เลือก</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+function renderUsers() {
+  const s = state;
+  if (s.usersLoading && !s.usersLoaded) return `<div style="padding:40px;text-align:center;color:#8A8380">กำลังโหลด...</div>`;
+  return `
+  <div>
+    <div style="display:flex;justify-content:flex-end;margin-bottom:16px">
+      <button onclick="openUserForm()" style="background:#D6201F;color:#fff;border:none;padding:9px 18px;border-radius:4px;font-size:13px;font-weight:700;cursor:pointer">+ เพิ่มผู้ใช้งาน</button>
+    </div>
+    <div style="background:#fff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.04);overflow:hidden">
+      <table style="width:100%;font-size:13px">
+        <thead><tr style="text-align:left;background:#F7F5F3;color:#8A8380">
+          <th style="padding:12px 16px;font-weight:600">ชื่อเล่น</th><th style="padding:12px 16px;font-weight:600">ชื่อผู้ใช้</th><th style="padding:12px 16px;font-weight:600">สิทธิ์</th><th style="padding:12px 16px"></th>
+        </tr></thead>
+        <tbody>
+          ${state.users.map((u) => `<tr style="border-top:1px solid #F3F0EE">
+            <td style="padding:12px 16px;font-weight:700">${esc(u.nickname)}</td>
+            <td style="padding:12px 16px;color:#726B68">${esc(u.username)}</td>
+            <td style="padding:12px 16px"><span style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;background:#F1EDEB;color:#3D3835">${u.role === 'admin' ? 'แอดมิน' : 'พนักงาน'}</span></td>
+            <td style="padding:12px 16px;text-align:right;white-space:nowrap">
+              <span class="clickable" onclick="resetPassword('${esc(u.username)}')" style="color:#1E5FA8;font-weight:700;margin-right:14px">ตั้งรหัสผ่านใหม่</span>
+              <span class="clickable" onclick="removeUser('${esc(u.username)}')" style="color:#D6201F;font-weight:700">ลบ</span>
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+function renderCaseModal() {
+  const c = state.cases.find((x) => x.ticketNo === state.selectedTicket);
+  if (!c) return '';
+  const isAdmin = state.auth && state.auth.role === 'admin';
+  const curIdx = STATUS_FLOW.indexOf(c.status);
+  const steps = STATUS_FLOW.map((label, i) => {
+    const sc = STATUS_COLORS[label];
+    if (isAdmin) {
+      const active = label === c.status;
+      return { label, clickable: true, bg: active ? sc.bg : '#F7F5F3', color: active ? sc.color : '#C4BEBB', border: active ? 'transparent' : '#E7E2DF' };
+    }
+    const reached = i <= curIdx;
+    const isNext = i === curIdx + 1;
+    return {
+      label, clickable: isNext,
+      bg: reached ? sc.bg : '#F7F5F3', color: reached ? sc.color : (isNext ? '#5A5450' : '#C4BEBB'),
+      border: reached ? 'transparent' : (isNext ? '1px dashed #8A8380' : '#E7E2DF'),
+    };
+  });
+  return `
+  <div style="position:fixed;inset:0;background:rgba(34,31,31,0.5);display:flex;align-items:center;justify-content:center;z-index:50" onclick="closeCase()">
+    <div style="background:#fff;border-radius:8px;width:520px;max-width:90vw;max-height:85vh;overflow:auto" onclick="stopProp(event)">
+      <div style="padding:20px 24px;border-bottom:1px solid #EEEAE8;display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <div style="font-size:12px;color:#8A8380">เลขพัสดุ · ${esc(c.ticketNo)}</div>
+          <div style="font-size:18px;font-weight:700;font-family:'Prompt',sans-serif">${esc(c.parcelNo)}</div>
+        </div>
+        <span class="clickable" onclick="closeCase()" style="font-size:18px;color:#8A8380">✕</span>
+      </div>
+      <div style="padding:22px 24px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;font-size:13px">
+          <div><div style="color:#8A8380;margin-bottom:2px">ผู้แจ้ง</div><div style="font-weight:600">${esc(c.complainantName || '-')}</div></div>
+          <div><div style="color:#8A8380;margin-bottom:2px">เบอร์ติดต่อ</div><div style="font-weight:600">${esc(c.phone || '-')}</div></div>
+          <div><div style="color:#8A8380;margin-bottom:2px">บริษัทขนส่ง</div><div style="font-weight:600">${esc(c.company || '-')}</div></div>
+          <div><div style="color:#8A8380;margin-bottom:2px">พนักงานดูแล</div><div style="font-weight:600">${esc(c.lastStaff || '-')}</div></div>
+        </div>
+        <div>
+          <div style="color:#8A8380;font-size:13px;margin-bottom:4px">รายละเอียด</div>
+          <div style="font-size:14px;background:#F7F5F3;padding:12px;border-radius:6px">${esc(c.detail || '-')}</div>
+        </div>
+        ${c.photoUrl ? `<div><a href="${esc(c.photoUrl)}" target="_blank" rel="noopener" style="font-size:13px">📷 ดูรูปภาพประกอบ</a></div>` : ''}
+        <div>
+          <div style="color:#8A8380;font-size:13px;margin-bottom:8px">สถานะปัจจุบัน</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            ${steps.map((st) => `<div ${st.clickable ? `class="clickable" onclick="setCaseStatus('${esc(c.ticketNo)}','${esc(st.label)}')"` : ''} style="padding:7px 14px;border-radius:20px;font-size:12px;font-weight:700;background:${st.bg};color:${st.color};border:1px solid ${st.border}">${esc(st.label)}</div>`).join('')}
+          </div>
+          ${isAdmin ? `<div style="font-size:12px;color:#A39C99;margin-top:6px">ผู้ดูแลระบบ: คลิกเปลี่ยน/คืนสถานะได้ทุกสถานะ</div>` : `<div style="font-size:12px;color:#A39C99;margin-top:6px">คลิกที่สถานะถัดไปเพื่อดำเนินการตามลำดับ</div>`}
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderReportModal() {
+  return `
+  <div style="position:fixed;inset:0;background:rgba(34,31,31,0.5);display:flex;align-items:center;justify-content:center;z-index:50;padding:20px" onclick="closeReportModal()">
+    <div style="background:#fff;border-radius:8px;width:520px;max-width:100%;max-height:90vh;overflow:auto" onclick="stopProp(event)">
+      <div style="padding:18px 22px;border-bottom:1px solid #EEEAE8;display:flex;justify-content:space-between;align-items:center">
+        <div style="font-size:16px;font-weight:700;font-family:'Prompt',sans-serif">เพิ่มเรื่องร้องเรียน</div>
+        <span class="clickable" onclick="closeReportModal()" style="font-size:18px;color:#8A8380">✕</span>
+      </div>
+      <div style="padding:18px 22px">${renderReportForm(true)}</div>
+    </div>
+  </div>`;
+}
+
+function renderUserFormModal() {
+  const s = state;
+  return `
+  <div style="position:fixed;inset:0;background:rgba(34,31,31,0.5);display:flex;align-items:center;justify-content:center;z-index:50;padding:20px" onclick="closeUserForm()">
+    <div style="background:#fff;border-radius:8px;width:420px;max-width:100%" onclick="stopProp(event)">
+      <div style="padding:18px 22px;border-bottom:1px solid #EEEAE8;display:flex;justify-content:space-between;align-items:center">
+        <div style="font-size:16px;font-weight:700;font-family:'Prompt',sans-serif">เพิ่มผู้ใช้งาน</div>
+        <span class="clickable" onclick="closeUserForm()" style="font-size:18px;color:#8A8380">✕</span>
+      </div>
+      <div style="padding:18px 22px;display:flex;flex-direction:column;gap:10px">
+        <div>
+          <label style="font-size:12.5px;font-weight:600;color:#4A4442;display:block;margin-bottom:5px">ชื่อผู้ใช้ (username)</label>
+          <input id="newUserUsername" style="width:100%;padding:9px 12px;border:1px solid #DCD6D3;border-radius:4px;font-size:13.5px">
+        </div>
+        <div>
+          <label style="font-size:12.5px;font-weight:600;color:#4A4442;display:block;margin-bottom:5px">ชื่อเล่น</label>
+          <input id="newUserNickname" style="width:100%;padding:9px 12px;border:1px solid #DCD6D3;border-radius:4px;font-size:13.5px">
+        </div>
+        <div>
+          <label style="font-size:12.5px;font-weight:600;color:#4A4442;display:block;margin-bottom:5px">สิทธิ์</label>
+          <select id="newUserRole" style="width:100%;padding:9px 12px;border:1px solid #DCD6D3;border-radius:4px;font-size:13.5px;background:#fff">
+            <option value="staff">พนักงาน</option>
+            <option value="admin">แอดมิน</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:12.5px;font-weight:600;color:#4A4442;display:block;margin-bottom:5px">รหัสผ่าน (อย่างน้อย 6 ตัวอักษร)</label>
+          <input id="newUserPassword" type="password" style="width:100%;padding:9px 12px;border:1px solid #DCD6D3;border-radius:4px;font-size:13.5px">
+        </div>
+        ${s.userFormError ? `<div style="color:#B3160F;font-size:12px;font-weight:600">${esc(s.userFormError)}</div>` : ''}
+        <button onclick="submitUserForm()" style="margin-top:2px;background:#D6201F;color:#fff;border:none;padding:11px;border-radius:4px;font-size:14px;font-weight:700;cursor:pointer">${s.userFormBusy ? 'กำลังบันทึก...' : 'เพิ่มผู้ใช้งาน'}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ===================== Boot: เช็ค session cookie เดิม (ถ้ามี) ก่อนแสดงผลครั้งแรก =====================
+async function init() {
+  try {
+    const res = await apiGet('/api/me');
+    if (res.ok) {
+      setState({
+        booting: false, view: 'staff', staffPage: 'dashboard',
+        auth: { username: res.username, nickname: res.nickname, role: res.role },
+      });
+      loadCases();
+      return;
+    }
+  } catch (e) { /* เข้าเว็บแบบไม่ล็อกอินได้ตามปกติ */ }
+  setState({ booting: false });
+}
+init();
+</script>
+</body>
+</html>
