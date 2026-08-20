@@ -81,7 +81,7 @@ CASE_COLS = [
     "updatedAt", "closedAt",
 ]
 
-STATUSES = ["รอติดตาม", "กำลังติดตาม", "ติดต่อได้แล้ว", "ปิดเรื่อง"]
+STATUSES = ["รอติดตาม", "กำลังติดตาม", "ส่งสาขา", "ปิดเรื่อง"]
 
 app = Flask(__name__)
 app.secret_key = os.environ["SECRET_KEY"]
@@ -346,18 +346,26 @@ def api_update_status(ticket_no):
     sheet = ws(SHEET_CASES)
     now = now_str()
     nickname = session["nickname"]
-    sheet.update_cell(row_i, 10, status)                 # สถานะปัจจุบัน
-    # ช่องทางล่าสุด — อัปเดตเฉพาะเมื่อส่งมาจริง ไม่งั้นจะไปลบค่าเดิมทิ้งเปล่าๆ (หน้าเว็บปัจจุบันไม่มี UI เลือกช่องทางตอนเปลี่ยนสถานะ)
-    if data.get("channel"):
-        sheet.update_cell(row_i, 11, data.get("channel"))
-    sheet.update_cell(row_i, 12, nickname)                # เจ้าหน้าที่ล่าสุด
-    sheet.update_cell(row_i, 13, now)                     # วันที่อัปเดตล่าสุด
-    if status == "ปิดเรื่อง":
-        sheet.update_cell(row_i, 14, now)                 # วันที่ปิดเรื่อง
+    # ช่องทางล่าสุด — คงค่าเดิมไว้ถ้าไม่ได้ส่งมาใหม่ (หน้าเว็บปัจจุบันไม่มี UI เลือกช่องทางตอนเปลี่ยนสถานะ)
+    channel_val = data.get("channel") or case.get("lastChannel") or ""
+    closed_val = now if status == "ปิดเรื่อง" else (case.get("closedAt") or "")
+
+    # อัปเดตคอลัมน์ J:N (สถานะปัจจุบัน, ช่องทางล่าสุด, เจ้าหน้าที่ล่าสุด, วันที่อัปเดตล่าสุด, วันที่ปิดเรื่อง)
+    # ในคำขอ API ครั้งเดียว (แต่ก่อนยิงทีละคอลัมน์แยกกันสูงสุด 5 ครั้ง ทำให้อัปเดตสถานะช้า)
+    sheet.update(f"J{row_i}:N{row_i}", [[status, channel_val, nickname, now, closed_val]],
+                 value_input_option="USER_ENTERED")
 
     append_log(case["ticketNo"], data.get("channel") or "", status, data.get("note") or "",
                session["username"], nickname)
-    return jsonify(ok=True, ticketNo=case["ticketNo"])
+
+    updated_case = dict(case)
+    updated_case.update({
+        "status": status, "lastChannel": channel_val, "lastStaff": nickname,
+        "updatedAt": now, "closedAt": closed_val,
+    })
+    # ส่งเคสที่อัปเดตแล้วกลับไปด้วย เพื่อให้หน้าเว็บอัปเดตข้อมูลในตัวเองได้เลย
+    # ไม่ต้องยิง /api/cases โหลดทั้งชีตใหม่ทุกครั้ง (อีกจุดที่ทำให้ก่อนหน้านี้ช้า)
+    return jsonify(ok=True, ticketNo=case["ticketNo"], case=updated_case)
 
 
 @app.get("/api/export.xlsx")

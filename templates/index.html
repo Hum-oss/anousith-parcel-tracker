@@ -32,14 +32,14 @@
  * ===================================================================== */
 
 // ตรงกับ STATUSES ใน app.py / Code_2.gs เป๊ะๆ — ห้ามแก้ชื่อสถานะ เพราะ backend ตรวจสอบตรงตัว
-const STATUS_FLOW = ['รอติดตาม', 'กำลังติดตาม', 'ติดต่อได้แล้ว', 'ปิดเรื่อง'];
+const STATUS_FLOW = ['รอติดตาม', 'กำลังติดตาม', 'ส่งสาขา', 'ปิดเรื่อง'];
 const STATUS_COLORS = {
   'รอติดตาม': { bg: '#EFEDEC', color: '#5A5450' },
   'กำลังติดตาม': { bg: '#FCEFDB', color: '#B5730A' },
-  'ติดต่อได้แล้ว': { bg: '#DDEAFB', color: '#1E5FA8' },
+  'ส่งสาขา': { bg: '#DDEAFB', color: '#1E5FA8' },
   'ปิดเรื่อง': { bg: '#DFF1E1', color: '#2E7D32' },
 };
-const DONUT_COLORS = { 'รอติดตาม': '#A39C99', 'กำลังติดตาม': '#EE9E3A', 'ติดต่อได้แล้ว': '#3B82D6', 'ปิดเรื่อง': '#2E7D32' };
+const DONUT_COLORS = { 'รอติดตาม': '#A39C99', 'กำลังติดตาม': '#EE9E3A', 'ส่งสาขา': '#3B82D6', 'ปิดเรื่อง': '#2E7D32' };
 
 // ตรงกับ CONFIG.CHANNELS ใน Code_2.gs — แก้เฉพาะจุดที่โค้ดเดิมมี stray comma (ช่องว่าง undefined)
 // และสะกด "whatapp" ใหม่เป็น "WhatsApp" เฉพาะฝั่งหน้าเว็บนี้ (ไม่แตะ Apps Script เดิม)
@@ -92,6 +92,12 @@ function apiDelete(path) { return apiRequest('DELETE', path); }
 function esc(v) {
   if (v === null || v === undefined) return '';
   return String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// "พนักงานดูแล" — ถ้ายังไม่มีเจ้าหน้าที่คนไหนอัปเดตเคสนี้เลย (lastStaff ว่าง) ให้ใช้ "แหล่งที่มา" แทน
+// (เคส sync จาก AppSheet ส่วนใหญ่มีชื่อผู้บันทึกอยู่ในแหล่งที่มาอยู่แล้ว) ใช้จุดเดียวนี้ทุกที่ที่แสดงพนักงานดูแล
+function caseOwner(c) {
+  return (c.lastStaff && c.lastStaff.trim()) || (c.source && c.source.trim()) || '';
 }
 
 // ===================== รูปภาพจาก Google Drive =====================
@@ -164,6 +170,8 @@ const state = {
 
   // public search
   searchResult: null, searchError: null, searched: false, searchLoading: false,
+  // ฟอร์มยืนยันข้อมูลติดต่อ (ชื่อ+เบอร์) ตอนค้นหาเจอพัสดุจากหน้า public
+  contactFormSubmitting: false, contactFormSubmitted: false, contactFormError: null,
 
   // public / staff report form
   reportOpen: false, // when true inside staff view, shows the report form as a modal
@@ -190,7 +198,7 @@ function showToast(msg) {
 }
 
 // ===================== Actions =====================
-function goSearch() { setState({ view: 'search', searchResult: null, searched: false, searchError: null, reportOpen: false }); }
+function goSearch() { setState({ view: 'search', searchResult: null, searched: false, searchError: null, reportOpen: false, contactFormSubmitted: false, contactFormError: null }); }
 function goReport() { setState({ view: 'report', reportSubmitted: false, reportError: null }); }
 function goStaffLogin() { setState({ view: 'staffLogin' }); }
 
@@ -231,13 +239,31 @@ function handleAuthExpired(res) {
 async function onSearch() {
   const q = document.getElementById('searchQuery').value.trim();
   if (!q) { setState({ searchError: 'กรุณากรอกเลขพัสดุหรือเลขแจ้งเรื่อง', searchResult: null, searched: false }); return; }
-  setState({ searchLoading: true, searchError: null });
+  setState({ searchLoading: true, searchError: null, contactFormSubmitted: false, contactFormError: null });
   try {
     const res = await apiGet('/api/search', { q });
     if (!res.ok) { setState({ searchLoading: false, searchResult: null, searched: true, searchError: null }); return; }
     setState({ searchLoading: false, searchResult: res.case, searched: true, searchError: null });
   } catch (e) {
     setState({ searchLoading: false, searchError: e.message || 'ค้นหาไม่สำเร็จ ลองใหม่อีกครั้ง' });
+  }
+}
+
+// ยืนยันข้อมูลติดต่อ (ชื่อ+เบอร์) จากหน้าค้นหา — ใช้ endpoint เดียวกับแจ้งเรื่องพัสดุ (/api/complaints)
+// เพราะเคสมีอยู่แล้ว ระบบจะจับคู่ด้วยเลขพัสดุแล้วเติม/บันทึกข้อมูลติดต่อให้อัตโนมัติ
+async function onConfirmContact() {
+  const name = document.getElementById('confirmName').value.trim();
+  const phone = document.getElementById('confirmPhone').value.trim();
+  if (!name || !phone) { setState({ contactFormError: 'กรุณากรอกชื่อผู้แจ้งและเบอร์โทรศัพท์' }); return; }
+  const r = state.searchResult;
+  if (!r) return;
+  setState({ contactFormSubmitting: true, contactFormError: null });
+  try {
+    const res = await apiPost('/api/complaints', { parcelNo: r.parcelNo, company: r.company, name, phone, detail: '' });
+    if (!res.ok) { setState({ contactFormSubmitting: false, contactFormError: res.error || 'บันทึกข้อมูลไม่สำเร็จ' }); return; }
+    setState({ contactFormSubmitting: false, contactFormSubmitted: true, contactFormError: null });
+  } catch (e) {
+    setState({ contactFormSubmitting: false, contactFormError: e.message || 'บันทึกข้อมูลไม่สำเร็จ ลองใหม่อีกครั้ง' });
   }
 }
 
@@ -316,14 +342,16 @@ function stopProp(ev) { ev.stopPropagation(); }
 
 async function setCaseStatus(ticketNo, status) {
   if (!state.auth) return;
+  if (!confirm('ยืนยันเปลี่ยนสถานะเคส ' + ticketNo + ' เป็น "' + status + '" ?')) return;
   setState({ loading: true });
   try {
     const res = await apiPatch('/api/cases/' + encodeURIComponent(ticketNo), { status });
     if (handleAuthExpired(res)) return;
-    setState({ loading: false });
-    if (!res.ok) { showToast(res.error || 'อัปเดตสถานะไม่สำเร็จ'); return; }
+    if (!res.ok) { setState({ loading: false }); showToast(res.error || 'อัปเดตสถานะไม่สำเร็จ'); return; }
+    // อัปเดตเคสในหน่วยความจำโดยตรงจากข้อมูลที่ API ส่งกลับมา แทนการโหลดทั้งชีตใหม่ (loadCases) ทุกครั้ง — เร็วขึ้นมาก
+    const cases = res.case ? state.cases.map((c) => (c.ticketNo === ticketNo ? res.case : c)) : state.cases;
+    setState({ loading: false, cases });
     showToast('อัปเดตสถานะแล้ว');
-    await loadCases();
   } catch (e) {
     setState({ loading: false }); showToast(e.message || 'อัปเดตสถานะไม่สำเร็จ');
   }
@@ -468,9 +496,9 @@ function computeDerived() {
     return { label, count, pct: Math.round((count / maxCompany) * 100) + '%', color: COMPANY_COLORS[label] || '#8A8380', dim: (dashFilter && !active) ? '0.4' : '1' };
   });
 
-  const staffNames = Array.from(new Set(filtered.map((c) => c.lastStaff).filter(Boolean)));
+  const staffNames = Array.from(new Set(filtered.map((c) => caseOwner(c)).filter(Boolean)));
   const staffStats = staffNames.map((name) => {
-    const mine = filtered.filter((c) => c.lastStaff === name);
+    const mine = filtered.filter((c) => caseOwner(c) === name);
     const closed = mine.filter((c) => c.status === 'ปิดเรื่อง');
     const closedD = closed.filter((c) => c.closedAt && c.openedAt);
     const avg = closedD.length
@@ -607,6 +635,19 @@ function renderPublic() {
                 </div>`}
             </div>
           </div>
+        </div>
+        <div style="border-top:1px solid #F3F0EE;padding:16px 20px;background:#FBF9F8">
+          ${s.contactFormSubmitted ? `
+            <div style="font-size:13.5px;color:#2E7D32;font-weight:700">✓ บันทึกข้อมูลติดต่อแล้ว เจ้าหน้าที่จะติดต่อกลับ</div>
+          ` : `
+            <div style="font-size:13px;font-weight:700;margin-bottom:10px;font-family:'Prompt',sans-serif">ยืนยันข้อมูลติดต่อ (สำหรับให้เจ้าหน้าที่ติดต่อกลับ)</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px">
+              <input id="confirmName" placeholder="ชื่อผู้แจ้ง" style="width:100%;padding:9px 12px;border:1px solid #DCD6D3;border-radius:4px;font-size:13.5px">
+              <input id="confirmPhone" placeholder="เบอร์โทรศัพท์" style="width:100%;padding:9px 12px;border:1px solid #DCD6D3;border-radius:4px;font-size:13.5px">
+            </div>
+            ${s.contactFormError ? `<div style="color:#B3160F;font-size:12px;font-weight:600;margin-bottom:8px">${esc(s.contactFormError)}</div>` : ''}
+            <button onclick="onConfirmContact()" style="background:#D6201F;color:#fff;border:none;padding:10px 20px;border-radius:4px;font-size:13.5px;font-weight:700;cursor:pointer">${s.contactFormSubmitting ? 'กำลังบันทึก...' : 'ยืนยันข้อมูล'}</button>
+          `}
         </div>
       </div>`;
     }
@@ -856,7 +897,7 @@ function renderCases() {
               <td style="padding:12px 16px;font-weight:700">${esc(c.parcelNo)}</td>
               <td style="padding:12px 16px;color:#726B68">${esc(c.ticketNo)}</td>
               <td style="padding:12px 16px">${esc(c.complainantName || '-')}</td>
-              <td style="padding:12px 16px">${esc(c.lastStaff || '-')}</td>
+              <td style="padding:12px 16px">${esc(caseOwner(c) || '-')}</td>
               <td style="padding:12px 16px;color:#726B68">${esc(fmtDateThai(c.openedAt))}</td>
               <td style="padding:12px 16px"><span style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;background:${sc.bg};color:${sc.color}">${esc(c.status)}</span></td>
               <td style="padding:12px 16px;text-align:right"><span class="clickable" onclick="openCase('${esc(c.ticketNo)}')" style="color:#D6201F;font-weight:700">ดู</span></td>
@@ -931,13 +972,20 @@ function renderCaseModal() {
           <div><div style="color:#8A8380;margin-bottom:2px">ผู้แจ้ง</div><div style="font-weight:600">${esc(c.complainantName || '-')}</div></div>
           <div><div style="color:#8A8380;margin-bottom:2px">เบอร์ติดต่อ</div><div style="font-weight:600">${esc(c.phone || '-')}</div></div>
           <div><div style="color:#8A8380;margin-bottom:2px">บริษัทขนส่ง</div><div style="font-weight:600">${esc(c.company || '-')}</div></div>
-          <div><div style="color:#8A8380;margin-bottom:2px">พนักงานดูแล</div><div style="font-weight:600">${esc(c.lastStaff || '-')}</div></div>
+          <div><div style="color:#8A8380;margin-bottom:2px">พนักงานดูแล</div><div style="font-weight:600">${esc(caseOwner(c) || '-')}</div></div>
         </div>
         <div>
           <div style="color:#8A8380;font-size:13px;margin-bottom:4px">รายละเอียด</div>
           <div style="font-size:14px;background:#F7F5F3;padding:12px;border-radius:6px">${esc(c.detail || '-')}</div>
         </div>
-        ${c.photoUrl ? `<div><a href="${esc(driveViewUrl(c.photoUrl))}" target="_blank" rel="noopener" style="font-size:13px">📷 ดูรูปภาพประกอบ</a></div>` : ''}
+        ${c.photoUrl ? `
+        <div>
+          <div style="color:#8A8380;font-size:13px;margin-bottom:6px">รูปภาพประกอบ</div>
+          <div style="border-radius:6px;overflow:hidden;border:1px solid #E7E2DF;max-width:280px">
+            <img src="${esc(driveThumbUrl(c.photoUrl))}" data-orig="${esc(c.photoUrl)}" data-stage="0" alt="รูปพัสดุ ${esc(c.parcelNo)}" style="width:100%;display:block;aspect-ratio:4/3;object-fit:cover;background:#F1EDEB" onerror="handlePhotoError(this)">
+            <a href="${esc(driveViewUrl(c.photoUrl))}" target="_blank" rel="noopener" style="display:block;text-align:center;padding:6px;font-size:11px;font-weight:600;background:#F7F5F3">ดูรูปภาพขนาดปกติ</a>
+          </div>
+        </div>` : ''}
         <div>
           <div style="color:#8A8380;font-size:13px;margin-bottom:8px">สถานะปัจจุบัน</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
