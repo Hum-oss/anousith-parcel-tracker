@@ -19,6 +19,7 @@ Flask นี้ไม่ยุ่งกับ trigger ของ Apps Script เ�
 import os
 import io
 import json
+import time
 import hashlib
 import secrets
 import threading
@@ -48,7 +49,24 @@ _creds_info = json.loads(_creds_raw)
 _SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 _creds = Credentials.from_service_account_info(_creds_info, scopes=_SCOPES)
 _gc = gspread.authorize(_creds)
-_spreadsheet = _gc.open_by_key(SPREADSHEET_ID)
+
+
+def _open_spreadsheet_with_retry(gc, spreadsheet_id, attempts=5, base_delay=2):
+    """เชื่อมสเปรดชีตตอนสตาร์ทแอป พร้อม retry แบบ exponential backoff —
+    กัน Google Sheets API แผ่วชั่วคราว (เช่น 503) ตอน deploy ทำให้แอปทั้งตัวล่มไปเปล่าๆ
+    ทั้งที่รอบ deploy ถัดไปมักจะผ่านปกติอยู่แล้ว"""
+    last_err = None
+    for attempt in range(attempts):
+        try:
+            return gc.open_by_key(spreadsheet_id)
+        except Exception as e:  # noqa: BLE001 — ตั้งใจดักทุก exception ตอน retry การเชื่อมต่อภายนอก
+            last_err = e
+            if attempt < attempts - 1:
+                time.sleep(base_delay * (2 ** attempt))
+    raise last_err
+
+
+_spreadsheet = _open_spreadsheet_with_retry(_gc, SPREADSHEET_ID)
 
 BKK_TZ = timezone(timedelta(hours=7))
 
