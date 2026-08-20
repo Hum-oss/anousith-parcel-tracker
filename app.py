@@ -219,9 +219,10 @@ def api_search():
     if not case:
         return jsonify(ok=False, error="ไม่พบข้อมูลในระบบ")
     # ไม่คืนชื่อ/เบอร์ผู้ร้องเรียน (ข้อมูลส่วนตัวของอีกคน) เหมือน searchCasePublic() เดิม
+    # "source" คืนได้ปกติ — เป็นแหล่งที่มาของเคส (ชื่อเจ้าหน้าที่ผู้บันทึก หรือ "ผู้รับร้องเรียน") ไม่ใช่ข้อมูลส่วนตัวของลูกค้า
     return jsonify(ok=True, case={
         "ticketNo": case["ticketNo"], "parcelNo": case["parcelNo"], "company": case["company"],
-        "status": case["status"], "lastChannel": case["lastChannel"],
+        "status": case["status"], "lastChannel": case["lastChannel"], "source": case["source"],
         "openedAt": case["openedAt"], "updatedAt": case["updatedAt"], "closedAt": case["closedAt"],
         "detail": case["detail"], "photoUrl": case["photoUrl"],
     })

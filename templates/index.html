@@ -94,6 +94,38 @@ function esc(v) {
   return String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// ===================== รูปภาพจาก Google Drive =====================
+// รูปที่ sync มาจาก AppSheet เก็บเป็นลิงก์ https://drive.google.com/uc?export=view&id=... ซึ่ง
+// ใช้เป็น <img src> ตรงๆ ได้ไม่เสถียร (กูเกิลจำกัด hotlink บนลิงก์รูปแบบนี้บ่อยๆ แม้ไฟล์จะแชร์แบบ
+// "ทุกคนที่มีลิงก์ดูได้" อยู่แล้วก็ตาม) — ฟังก์ชันนี้ดึง fileId ออกมาแล้วสร้างลิงก์รูปแบบที่โหลดได้เสถียรกว่า
+function extractDriveFileId(url) {
+  if (!url) return null;
+  let m = String(url).match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (m) return m[1];
+  m = String(url).match(/\/d\/([a-zA-Z0-9_-]+)/);
+  if (m) return m[1];
+  return null;
+}
+function driveThumbUrl(url) {
+  const id = extractDriveFileId(url);
+  return id ? ('https://drive.google.com/thumbnail?id=' + id + '&sz=w1000') : url;
+}
+function driveViewUrl(url) {
+  const id = extractDriveFileId(url);
+  return id ? ('https://drive.google.com/file/d/' + id + '/view') : url;
+}
+// onerror ของ <img>: ถ้าลิงก์แบบ thumbnail โหลดไม่ขึ้น ให้ลองรูปแบบสำรอง (lh3.googleusercontent.com) ก่อนค่อยซ่อนรูปทิ้ง
+function handlePhotoError(img) {
+  const stage = img.dataset.stage || '0';
+  const id = extractDriveFileId(img.dataset.orig);
+  if (stage === '0' && id) {
+    img.dataset.stage = '1';
+    img.src = 'https://lh3.googleusercontent.com/d/' + id + '=w1000';
+    return;
+  }
+  img.style.display = 'none';
+}
+
 // yyyy-MM-dd HH:mm:ss (หรือ yyyy-MM-dd) -> "18 ส.ค. 2569" (พ.ศ.)
 function fmtDateThai(str) {
   if (!str) return '';
@@ -552,6 +584,7 @@ function renderPublic() {
           <div>
             <div style="font-size:13px;font-weight:700;margin-bottom:10px;font-family:'Prompt',sans-serif">รายละเอียด</div>
             <div style="display:flex;flex-direction:column;gap:8px;font-size:12.5px">
+              ${r.source ? `<div style="display:flex;justify-content:space-between;gap:8px;border-bottom:1px solid #F3F0EE;padding-bottom:7px"><span style="color:#8A8380">แหล่งที่มา</span><span style="font-weight:600;text-align:right">${esc(r.source)}</span></div>` : ''}
               <div style="display:flex;justify-content:space-between;gap:8px;border-bottom:1px solid #F3F0EE;padding-bottom:7px"><span style="color:#8A8380">วันที่แจ้งเรื่อง</span><span style="font-weight:600;text-align:right">${esc(fmtDateThai(r.openedAt))}</span></div>
               <div style="display:flex;justify-content:space-between;gap:8px;border-bottom:1px solid #F3F0EE;padding-bottom:7px"><span style="color:#8A8380">อัปเดตล่าสุด</span><span style="font-weight:600;text-align:right">${esc(fmtDateTimeThai(r.updatedAt))}</span></div>
               ${r.closedAt ? `<div style="display:flex;justify-content:space-between;gap:8px;border-bottom:1px solid #F3F0EE;padding-bottom:7px"><span style="color:#8A8380">ปิดเรื่องเมื่อ</span><span style="font-weight:600;text-align:right">${esc(fmtDateThai(r.closedAt))}</span></div>` : ''}
@@ -566,8 +599,8 @@ function renderPublic() {
             <div style="font-size:13px;font-weight:700;margin-bottom:10px;font-family:'Prompt',sans-serif">รูปภาพประกอบ</div>
             <div style="border-radius:6px;overflow:hidden;border:1px solid #E7E2DF">
               ${hasPhoto ? `
-                <img src="${esc(r.photoUrl)}" alt="รูปพัสดุ ${esc(r.parcelNo)}" style="width:100%;display:block;aspect-ratio:4/3;object-fit:cover;background:#F1EDEB" onerror="this.style.display='none'">
-                <a href="${esc(r.photoUrl)}" target="_blank" rel="noopener" style="display:block;text-align:center;padding:6px;font-size:11px;font-weight:600;background:#F7F5F3">ดูรูปภาพขนาดปกติ</a>
+                <img src="${esc(driveThumbUrl(r.photoUrl))}" data-orig="${esc(r.photoUrl)}" data-stage="0" alt="รูปพัสดุ ${esc(r.parcelNo)}" style="width:100%;display:block;aspect-ratio:4/3;object-fit:cover;background:#F1EDEB" onerror="handlePhotoError(this)">
+                <a href="${esc(driveViewUrl(r.photoUrl))}" target="_blank" rel="noopener" style="display:block;text-align:center;padding:6px;font-size:11px;font-weight:600;background:#F7F5F3">ดูรูปภาพขนาดปกติ</a>
               ` : `
                 <div style="aspect-ratio:4/3;background:repeating-linear-gradient(45deg,#F1EDEB,#F1EDEB 10px,#E7E2DF 10px,#E7E2DF 20px);display:flex;align-items:center;justify-content:center;text-align:center;padding:10px">
                   <span style="font-family:monospace;font-size:11px;color:#8A8380">[ ไม่มีรูปภาพประกอบ ]</span>
@@ -904,7 +937,7 @@ function renderCaseModal() {
           <div style="color:#8A8380;font-size:13px;margin-bottom:4px">รายละเอียด</div>
           <div style="font-size:14px;background:#F7F5F3;padding:12px;border-radius:6px">${esc(c.detail || '-')}</div>
         </div>
-        ${c.photoUrl ? `<div><a href="${esc(c.photoUrl)}" target="_blank" rel="noopener" style="font-size:13px">📷 ดูรูปภาพประกอบ</a></div>` : ''}
+        ${c.photoUrl ? `<div><a href="${esc(driveViewUrl(c.photoUrl))}" target="_blank" rel="noopener" style="font-size:13px">📷 ดูรูปภาพประกอบ</a></div>` : ''}
         <div>
           <div style="color:#8A8380;font-size:13px;margin-bottom:8px">สถานะปัจจุบัน</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
