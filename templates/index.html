@@ -183,6 +183,8 @@ const state = {
   reportRange: 'week', reportFrom: '', reportTo: '',
   reportStatusFilter: [],
   dashboardFilter: null, // {type, value}
+  // ตัวกรองวันที่ของหน้าเคสแจ้งเรื่อง — แยกอิสระจากตัวกรองของแดชบอร์ดโดยสิ้นเชิง
+  casesRange: 'all', // all | day | week | month
   selectedTicket: null,
   pendingStatus: null,
   caseHistory: [],
@@ -324,6 +326,7 @@ async function loadUsers() {
 }
 
 function setReportRange(r) { setState({ reportRange: r }); }
+function setCasesRange(r) { setState({ casesRange: r }); }
 function onReportFromChange() { setState({ reportFrom: document.getElementById('reportFromInput').value }); }
 function onReportToChange() { setState({ reportTo: document.getElementById('reportToInput').value }); }
 function toggleReportStatus(status) {
@@ -457,6 +460,14 @@ function currentRangeDates() {
   return { dateFrom: '', dateTo: '' };
 }
 
+// ตัวกรองวันที่ของหน้าเคสแจ้งเรื่อง — คำนวณแยกจาก currentRangeDates() (ของแดชบอร์ด) โดยสิ้นเชิง
+function casesRangeDates() {
+  if (state.casesRange === 'day') return { dateFrom: todayISO(), dateTo: todayISO() };
+  if (state.casesRange === 'week') return { dateFrom: daysAgoISO(6), dateTo: todayISO() };
+  if (state.casesRange === 'month') return { dateFrom: daysAgoISO(29), dateTo: todayISO() };
+  return { dateFrom: '', dateTo: '' }; // 'all' — ไม่กรองวันที่
+}
+
 // ===================== Derived data (เหมือน renderVals เดิม แต่ใช้ข้อมูลจริงจาก /api/cases) =====================
 function computeDerived() {
   const { dateFrom, dateTo } = currentRangeDates();
@@ -532,10 +543,19 @@ function computeDerived() {
     return { name, total: mine.length, closed: closed.length, avgTime: avg };
   });
 
-  // หน้าเคสแจ้งเรื่อง: ตัวกรองแยกออกจากหน้าแดชบอร์ดโดยสิ้นเชิง (ไม่ผูกกับช่วงวันที่/สถานะ/ตัวกรองของแดชบอร์ด)
-  // แสดงรายการทั้งหมดที่ยังไม่ปิดเรื่อง ไม่จำกัดช่วงวันที่ และเรียงตามวันที่แจ้งเรื่องก่อน-หลัง (แจ้งก่อนอยู่บนสุด)
-  const casesSorted = state.cases.filter((c) => c.status !== 'ส่งสาขา/ปิดเรื่อง').slice()
-    .sort((a, b) => new Date(a.openedAt) - new Date(b.openedAt));
+  // หน้าเคสแจ้งเรื่อง: ตัวกรองแยกออกจากหน้าแดชบอร์ดโดยสิ้นเชิง มีตัวกรองวันที่ของตัวเอง (วันนี้/สัปดาห์/เดือน/ทั้งหมด)
+  // ไม่ผูกกับช่วงวันที่/สถานะ/ตัวกรองของแดชบอร์ดเลย และไม่แสดงเคสที่ปิดแล้ว เรียงตามวันที่แจ้งเรื่องก่อน-หลัง
+  const casesRangeD = casesRangeDates();
+  const casesFrom = casesRangeD.dateFrom ? new Date(casesRangeD.dateFrom + ' 00:00:00') : null;
+  const casesTo = casesRangeD.dateTo ? new Date(casesRangeD.dateTo + ' 23:59:59') : null;
+  const casesSorted = state.cases.filter((c) => {
+    if (c.status === 'ส่งสาขา/ปิดเรื่อง') return false;
+    if (!casesFrom && !casesTo) return true;
+    const opened = new Date(c.openedAt);
+    if (casesFrom && opened < casesFrom) return false;
+    if (casesTo && opened > casesTo) return false;
+    return true;
+  }).sort((a, b) => new Date(a.openedAt) - new Date(b.openedAt));
 
   return {
     totalCases, closedCases, openCases, avgCloseDays,
@@ -768,15 +788,11 @@ function renderStaff() {
   const pageTitles = { dashboard: 'แดชบอร์ด', cases: 'เคสแจ้งเรื่อง', users: 'ผู้ใช้งาน' };
 
   let pageBody = '';
-  let pageTitle = pageTitles[s.staffPage];
+  const pageTitle = pageTitles[s.staffPage];
   if (s.casesLoading && !s.casesLoaded) {
     pageBody = `<div style="padding:40px;text-align:center;color:#8A8380">กำลังโหลดข้อมูล...</div>`;
   } else if (s.casesError) {
     pageBody = `<div style="padding:40px;text-align:center;color:#B3160F">${esc(s.casesError)} <span class="clickable" onclick="loadCases()" style="text-decoration:underline">ลองใหม่</span></div>`;
-  } else if (s.selectedTicket) {
-    // รายละเอียดเคส: แสดงอยู่ภายในหน้าเดียวกัน (แทนที่รายการ) ไม่ใช้ popup/modal ลอยทับอีกต่อไป
-    pageBody = renderCaseDetail();
-    pageTitle = 'รายละเอียดเคส';
   } else if (s.staffPage === 'dashboard') {
     pageBody = renderDashboard();
   } else if (s.staffPage === 'cases') {
@@ -809,6 +825,7 @@ function renderStaff() {
       <div style="padding:28px 32px">${pageBody}</div>
     </div>
   </div>
+  ${s.selectedTicket ? renderCaseModal() : ''}
   ${s.reportOpen ? renderReportModal() : ''}
   ${s.userFormOpen ? renderUserFormModal() : ''}`;
 }
@@ -910,8 +927,12 @@ function renderDashboard() {
 function renderCases() {
   const s = state;
   const d = computeDerived();
+  const casesRangeDefs = [{ k: 'all', l: 'ทั้งหมด' }, { k: 'day', l: 'วันนี้' }, { k: 'week', l: 'สัปดาห์นี้' }, { k: 'month', l: 'เดือนนี้' }];
   return `
   <div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+      ${casesRangeDefs.map((r) => `<div class="clickable" onclick="setCasesRange('${r.k}')" style="padding:7px 16px;border-radius:20px;font-size:13px;font-weight:600;background:${s.casesRange === r.k ? '#221F1F' : '#fff'};color:${s.casesRange === r.k ? '#fff' : '#4A4442'};border:1px solid ${s.casesRange === r.k ? '#221F1F' : '#DCD6D3'}">${r.l}</div>`).join('')}
+    </div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
       <div style="font-size:13px;color:#8A8380">ทั้งหมด ${d.casesSorted.length} เรื่องที่ยังไม่ปิดเรื่อง</div>
       <div style="display:flex;gap:10px">
@@ -974,11 +995,13 @@ function renderUsers() {
 
 // รายละเอียดเคส: แสดงอยู่ภายในหน้าเดียวกับรายการ (ไม่ใช่ popup/modal ลอยทับ) — คลิก "ดู" แล้วพื้นที่เนื้อหาหลัก
 // จะสลับมาแสดงหน้านี้แทนที่รายการ พร้อมปุ่ม "← กลับ" เพื่อย้อนกลับไปหน้าเคสแจ้งเรื่อง
-function renderCaseDetail() {
+// รายละเอียดเคส: popup/modal ลอยทับเหมือนเดิม แต่จัดเป็น 2 คอลัมน์ (ข้อมูลเคส+สถานะ | ประวัติการติดตาม)
+// เพื่อให้เนื้อหาทั้งหมดพอดีในหน้าจอเดียว ไม่ต้องเลื่อนดูทั้งหน้า (แต่ละคอลัมน์เลื่อนในตัวเองได้ถ้าเนื้อหายาวมาก)
+function renderCaseModal() {
   const c = state.cases.find((x) => x.ticketNo === state.selectedTicket);
-  if (!c) return `<div style="padding:40px;text-align:center;color:#8A8380">ไม่พบเคสนี้ <span class="clickable" onclick="closeCase()" style="text-decoration:underline">← กลับ</span></div>`;
+  if (!c) return '';
   const pending = state.pendingStatus;
-  // ทุกสถานะเลือกได้อิสระไม่ต้องเรียงลำดับ — เลือกแล้วต้องกดปุ่มยืนยันด้านล่างถึงจะบันทึกจริง (ไม่มี popup)
+  // ทุกสถานะเลือกได้อิสระไม่ต้องเรียงลำดับ — เลือกแล้วต้องกดปุ่มยืนยันด้านล่างถึงจะบันทึกจริง (ไม่มี popup ของเบราว์เซอร์)
   const steps = STATUS_FLOW.map((label) => {
     const sc = STATUS_COLORS[label];
     const isCurrent = label === c.status;
@@ -992,66 +1015,65 @@ function renderCaseDetail() {
     return { label, clickable: true, bg: '#F7F5F3', color: '#5A5450', border: '#E7E2DF' };
   });
   return `
-  <div style="display:flex;flex-direction:column;gap:16px">
-    <div class="clickable" onclick="closeCase()" style="font-size:13px;color:#8A8380;font-weight:600;display:inline-flex;align-items:center;gap:4px;width:fit-content">← กลับไปหน้าเคสแจ้งเรื่อง</div>
-    <div style="background:#fff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.04);overflow:hidden">
-      <div style="padding:20px 24px;border-bottom:1px solid #EEEAE8">
-        <div style="font-size:12px;color:#8A8380">เลขพัสดุ · เลขแจ้งเรื่อง ${esc(c.ticketNo)}</div>
-        <div style="font-size:18px;font-weight:700;font-family:'Prompt',sans-serif">${esc(c.parcelNo)}</div>
+  <div style="position:fixed;inset:0;background:rgba(34,31,31,0.5);display:flex;align-items:center;justify-content:center;z-index:50;padding:20px" onclick="closeCase()">
+    <div style="background:#fff;border-radius:8px;width:960px;max-width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden" onclick="stopProp(event)">
+      <div style="padding:16px 24px;border-bottom:1px solid #EEEAE8;display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
+        <div>
+          <div style="font-size:12px;color:#8A8380">เลขพัสดุ · เลขแจ้งเรื่อง ${esc(c.ticketNo)}</div>
+          <div style="font-size:17px;font-weight:700;font-family:'Prompt',sans-serif">${esc(c.parcelNo)}</div>
+        </div>
+        <span class="clickable" onclick="closeCase()" style="font-size:18px;color:#8A8380">✕</span>
       </div>
-      <div style="padding:22px 24px;display:flex;flex-direction:column;gap:14px">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;font-size:13px">
-          <div><div style="color:#8A8380;margin-bottom:2px">ผู้แจ้ง</div><div style="font-weight:600">${esc(c.complainantName || '-')}</div></div>
-          <div><div style="color:#8A8380;margin-bottom:2px">เบอร์ติดต่อ</div><div style="font-weight:600">${esc(c.phone || '-')}</div></div>
-          <div><div style="color:#8A8380;margin-bottom:2px">บริษัทขนส่ง</div><div style="font-weight:600">${esc(c.company || '-')}</div></div>
-          <div><div style="color:#8A8380;margin-bottom:2px">พนักงานดูแล</div><div style="font-weight:600">${esc(caseOwner(c) || '-')}</div></div>
-        </div>
-        <div>
-          <div style="color:#8A8380;font-size:13px;margin-bottom:4px">รายละเอียด</div>
-          <div style="font-size:14px;background:#F7F5F3;padding:12px;border-radius:6px">${esc(c.detail || '-')}</div>
-        </div>
-        ${c.photoUrl ? `
-        <div>
-          <div style="color:#8A8380;font-size:13px;margin-bottom:6px">รูปภาพประกอบ</div>
-          <div style="border-radius:6px;overflow:hidden;border:1px solid #E7E2DF;max-width:280px">
-            <img src="${esc(driveThumbUrl(c.photoUrl))}" data-orig="${esc(c.photoUrl)}" data-stage="0" alt="รูปพัสดุ ${esc(c.parcelNo)}" style="width:100%;display:block;aspect-ratio:4/3;object-fit:cover;background:#F1EDEB" onerror="handlePhotoError(this)">
-            <a href="${esc(driveViewUrl(c.photoUrl))}" target="_blank" rel="noopener" style="display:block;text-align:center;padding:6px;font-size:11px;font-weight:600;background:#F7F5F3">ดูรูปภาพขนาดปกติ</a>
+      <div style="display:flex;flex:1;min-height:0">
+        <div style="flex:1.15;overflow-y:auto;padding:18px 22px;display:flex;flex-direction:column;gap:12px;border-right:1px solid #EEEAE8">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:12.5px">
+            <div><div style="color:#8A8380;margin-bottom:2px">ผู้แจ้ง</div><div style="font-weight:600">${esc(c.complainantName || '-')}</div></div>
+            <div><div style="color:#8A8380;margin-bottom:2px">เบอร์ติดต่อ</div><div style="font-weight:600">${esc(c.phone || '-')}</div></div>
+            <div><div style="color:#8A8380;margin-bottom:2px">บริษัทขนส่ง</div><div style="font-weight:600">${esc(c.company || '-')}</div></div>
+            <div><div style="color:#8A8380;margin-bottom:2px">พนักงานดูแล</div><div style="font-weight:600">${esc(caseOwner(c) || '-')}</div></div>
           </div>
-        </div>` : ''}
-        <div>
-          <div style="color:#8A8380;font-size:13px;margin-bottom:8px">สถานะปัจจุบัน</div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            ${steps.map((st) => `<div class="clickable" onclick="selectPendingStatus('${esc(st.label)}')" style="padding:7px 14px;border-radius:20px;font-size:12px;font-weight:700;background:${st.bg};color:${st.color};border:1px solid ${st.border}">${esc(st.label)}</div>`).join('')}
-          </div>
-          <div style="font-size:12px;color:#A39C99;margin-top:6px">คลิกเลือกสถานะที่ต้องการ แล้วกดยืนยันด้านล่าง</div>
-          ${pending && pending !== c.status ? `
-          <div style="margin-top:12px;display:flex;align-items:center;gap:10px;background:#F7F5F3;border-radius:6px;padding:10px 12px">
-            <div style="font-size:12.5px;color:#4A4442">เปลี่ยนสถานะเป็น <b>${esc(pending)}</b> ?</div>
-            <div style="margin-left:auto;display:flex;gap:8px">
-              <button onclick="cancelPendingStatus()" style="background:#fff;border:1px solid #DCD6D3;padding:6px 14px;border-radius:4px;font-size:12.5px;font-weight:700;cursor:pointer;color:#5A5450">ยกเลิก</button>
-              <button onclick="confirmStatusChange('${esc(c.ticketNo)}')" style="background:#D6201F;color:#fff;border:none;padding:6px 14px;border-radius:4px;font-size:12.5px;font-weight:700;cursor:pointer">ยืนยัน</button>
-            </div>
-          </div>` : ''}
-        </div>
-      </div>
-    </div>
-    <div style="background:#fff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.04);overflow:hidden">
-      <div style="padding:16px 24px;border-bottom:1px solid #EEEAE8;font-size:14px;font-weight:700;font-family:'Prompt',sans-serif">ประวัติการติดตาม</div>
-      <div style="padding:16px 24px">
-        ${state.caseHistoryLoading ? `<div style="color:#8A8380;font-size:13px">กำลังโหลดประวัติ...</div>` : ''}
-        ${!state.caseHistoryLoading && !state.caseHistory.length ? `<div style="color:#A39C99;font-size:13px">ยังไม่มีประวัติการติดตาม</div>` : ''}
-        ${!state.caseHistoryLoading && state.caseHistory.length ? `
-        <div style="display:flex;flex-direction:column;gap:12px">
-          ${state.caseHistory.slice().reverse().map((h) => `
-          <div style="display:flex;gap:12px;font-size:12.5px;border-bottom:1px solid #F3F0EE;padding-bottom:10px">
-            <div style="color:#8A8380;white-space:nowrap;min-width:130px">${esc(fmtDateTimeThai(h.datetime))}</div>
+          <div style="display:flex;gap:14px">
             <div style="flex:1">
-              <div><b>${esc(h.status || '-')}</b>${h.channel ? ` · ${esc(h.channel)}` : ''}</div>
-              ${h.note ? `<div style="color:#5A5450;margin-top:2px">${esc(h.note)}</div>` : ''}
-              <div style="color:#A39C99;margin-top:2px">โดย ${esc(h.staffNickname || h.staffUsername || '-')}</div>
+              <div style="color:#8A8380;font-size:12.5px;margin-bottom:4px">รายละเอียด</div>
+              <div style="font-size:13px;background:#F7F5F3;padding:10px;border-radius:6px;max-height:120px;overflow-y:auto">${esc(c.detail || '-')}</div>
             </div>
-          </div>`).join('')}
-        </div>` : ''}
+            ${c.photoUrl ? `
+            <div style="width:150px;flex-shrink:0">
+              <div style="color:#8A8380;font-size:12.5px;margin-bottom:4px">รูปภาพ</div>
+              <div style="border-radius:6px;overflow:hidden;border:1px solid #E7E2DF">
+                <img src="${esc(driveThumbUrl(c.photoUrl))}" data-orig="${esc(c.photoUrl)}" data-stage="0" alt="รูปพัสดุ ${esc(c.parcelNo)}" style="width:100%;display:block;aspect-ratio:4/3;object-fit:cover;background:#F1EDEB" onerror="handlePhotoError(this)">
+                <a href="${esc(driveViewUrl(c.photoUrl))}" target="_blank" rel="noopener" style="display:block;text-align:center;padding:4px;font-size:10.5px;font-weight:600;background:#F7F5F3">ดูขนาดปกติ</a>
+              </div>
+            </div>` : ''}
+          </div>
+          <div>
+            <div style="color:#8A8380;font-size:12.5px;margin-bottom:6px">สถานะปัจจุบัน</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              ${steps.map((st) => `<div class="clickable" onclick="selectPendingStatus('${esc(st.label)}')" style="padding:6px 12px;border-radius:20px;font-size:11.5px;font-weight:700;background:${st.bg};color:${st.color};border:1px solid ${st.border}">${esc(st.label)}</div>`).join('')}
+            </div>
+            <div style="font-size:11.5px;color:#A39C99;margin-top:5px">คลิกเลือกสถานะที่ต้องการ แล้วกดยืนยันด้านล่าง</div>
+            ${pending && pending !== c.status ? `
+            <div style="margin-top:10px;display:flex;align-items:center;gap:10px;background:#F7F5F3;border-radius:6px;padding:9px 12px">
+              <div style="font-size:12px;color:#4A4442">เปลี่ยนสถานะเป็น <b>${esc(pending)}</b> ?</div>
+              <div style="margin-left:auto;display:flex;gap:8px">
+                <button onclick="cancelPendingStatus()" style="background:#fff;border:1px solid #DCD6D3;padding:5px 12px;border-radius:4px;font-size:12px;font-weight:700;cursor:pointer;color:#5A5450">ยกเลิก</button>
+                <button onclick="confirmStatusChange('${esc(c.ticketNo)}')" style="background:#D6201F;color:#fff;border:none;padding:5px 12px;border-radius:4px;font-size:12px;font-weight:700;cursor:pointer">ยืนยัน</button>
+              </div>
+            </div>` : ''}
+          </div>
+        </div>
+        <div style="flex:0.85;overflow-y:auto;padding:18px 22px;display:flex;flex-direction:column;gap:10px">
+          <div style="font-size:13px;font-weight:700;font-family:'Prompt',sans-serif">ประวัติการติดตาม</div>
+          ${state.caseHistoryLoading ? `<div style="color:#8A8380;font-size:12.5px">กำลังโหลดประวัติ...</div>` : ''}
+          ${!state.caseHistoryLoading && !state.caseHistory.length ? `<div style="color:#A39C99;font-size:12.5px">ยังไม่มีประวัติการติดตาม</div>` : ''}
+          ${!state.caseHistoryLoading && state.caseHistory.length ? state.caseHistory.slice().reverse().map((h) => `
+          <div style="font-size:12px;border-bottom:1px solid #F3F0EE;padding-bottom:9px">
+            <div style="color:#8A8380;white-space:nowrap;margin-bottom:2px">${esc(fmtDateTimeThai(h.datetime))}</div>
+            <div><b>${esc(h.status || '-')}</b>${h.channel ? ` · ${esc(h.channel)}` : ''}</div>
+            ${h.note ? `<div style="color:#5A5450;margin-top:2px">${esc(h.note)}</div>` : ''}
+            <div style="color:#A39C99;margin-top:2px">โดย ${esc(h.staffNickname || h.staffUsername || '-')}</div>
+          </div>`).join('') : ''}
+        </div>
       </div>
     </div>
   </div>`;
