@@ -236,13 +236,14 @@ def api_search():
     _, case = find_case(q)
     if not case:
         return jsonify(ok=False, error="ไม่พบข้อมูลในระบบ")
-    # ไม่คืนชื่อ/เบอร์ผู้ร้องเรียน (ข้อมูลส่วนตัวของอีกคน) เหมือน searchCasePublic() เดิม
-    # "source" คืนได้ปกติ — เป็นแหล่งที่มาของเคส (ชื่อเจ้าหน้าที่ผู้บันทึก หรือ "ผู้รับร้องเรียน") ไม่ใช่ข้อมูลส่วนตัวของลูกค้า
+    # ตามคำขอของเจ้าของกิจการ: แสดงชื่อ/ที่อยู่/เบอร์ผู้แจ้งเรื่องในผลค้นหาสาธารณะด้วย
+    # (เดิมตั้งใจไม่คืนค่านี้เพื่อความเป็นส่วนตัว แต่ธุรกิจต้องการให้ลูกค้าที่ค้นหาเห็นข้อมูลนี้)
     return jsonify(ok=True, case={
         "ticketNo": case["ticketNo"], "parcelNo": case["parcelNo"], "company": case["company"],
         "status": case["status"], "lastChannel": case["lastChannel"], "source": case["source"],
         "openedAt": case["openedAt"], "updatedAt": case["updatedAt"], "closedAt": case["closedAt"],
         "detail": case["detail"], "photoUrl": case["photoUrl"],
+        "complainantName": case["complainantName"], "phone": case["phone"],
     })
 
 
@@ -368,26 +369,22 @@ def api_update_status(ticket_no):
     return jsonify(ok=True, ticketNo=case["ticketNo"], case=updated_case)
 
 
-@app.get("/api/export.xlsx")
+@app.post("/api/export.xlsx")
 @staff_required
 def api_export_excel():
-    date_from = request.args.get("dateFrom") or ""
-    date_to = request.args.get("dateTo") or ""
-    status_filter = request.args.get("status") or ""
+    # ออกแบบใหม่: รับรายการเลขแจ้งเรื่อง (tickets) ที่หน้าเว็บกรอง/แสดงอยู่ตรงๆ มาเลย
+    # แทนที่จะให้ backend คำนวณเงื่อนไขกรองซ้ำ — รับประกันว่าไฟล์ที่ออกมาตรงกับที่เห็นบนหน้าจอ 100%
+    # (ไม่ว่าจะเป็นหน้าแดชบอร์ดหรือหน้าเคสแจ้งเรื่อง ซึ่งมีเงื่อนไขกรองต่างกัน)
+    data = request.get_json(force=True, silent=True) or {}
+    tickets = data.get("tickets") or []
+    date_from = data.get("dateFrom") or ""
+    date_to = data.get("dateTo") or ""
 
-    cases = get_all_cases()
+    if not isinstance(tickets, list) or not tickets:
+        return jsonify(ok=False, error="ไม่มีรายการเคสให้ออกรายงาน"), 400
 
-    def in_range(c):
-        opened = parse_dt(c["openedAt"])
-        if date_from and opened and opened < parse_dt(date_from):
-            return False
-        if date_to and opened and opened > (parse_dt(date_to) + timedelta(days=1) - timedelta(seconds=1)):
-            return False
-        if status_filter and c["status"] != status_filter:
-            return False
-        return True
-
-    rows = [c for c in cases if in_range(c)]
+    by_ticket = {c["ticketNo"]: c for c in get_all_cases()}
+    rows = [by_ticket[t] for t in tickets if t in by_ticket]
 
     wb = Workbook()
     wsx = wb.active
