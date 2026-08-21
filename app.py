@@ -46,9 +46,16 @@ SPREADSHEET_ID = os.environ["SPREADSHEET_ID"]  # ไอดีของ parcel-tr
 
 _creds_raw = os.environ["GOOGLE_CREDENTIALS_JSON"]  # เนื้อไฟล์ service_account.json ทั้งไฟล์ (เป็น JSON string)
 _creds_info = json.loads(_creds_raw)
-_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+# เพิ่ม scope ของ Drive (เต็ม ไม่ใช่ drive.file) เพื่ออัปโหลด/แชร์รูปภาพเข้าโฟลเดอร์ที่ผู้ใช้แชร์ให้ service
+# account ไว้ล่วงหน้า — drive.file แคบเกินไปเพราะจำกัดเฉพาะไฟล์ที่แอปสร้าง/เปิดเองผ่าน Picker เท่านั้น
+_SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 _creds = Credentials.from_service_account_info(_creds_info, scopes=_SCOPES)
 _gc = gspread.authorize(_creds)
+
+# โฟลเดอร์ Google Drive สำหรับอัปโหลดรูปภาพเคสใหม่/แก้ไขจากหน้าเว็บ — ต้องแชร์โฟลเดอร์นี้ให้อีเมลของ
+# service account (ดูใน Google Cloud Console) เป็นสิทธิ์ "ผู้แก้ไข (Editor)" ก่อน ไม่งั้นอัปโหลดไม่ได้
+# ไม่บังคับต้องตั้งตอนสตาร์ทแอป (ยังใช้งานฟีเจอร์อื่นได้ตามปกติ) แต่ endpoint อัปโหลดรูปจะแจ้ง error ชัดเจนถ้ายังไม่ตั้ง
+DRIVE_UPLOAD_FOLDER_ID = os.environ.get("DRIVE_UPLOAD_FOLDER_ID", "").strip()
 
 
 def _open_spreadsheet_with_retry(gc, spreadsheet_id, attempts=5, base_delay=2):
@@ -86,6 +93,8 @@ STATUSES = ["รอติดตาม", "กำลังติดตาม", "�
 app = Flask(__name__)
 app.secret_key = os.environ["SECRET_KEY"]
 app.permanent_session_lifetime = timedelta(hours=12)
+# กันคำขออัปโหลดรูปภาพใหญ่เกินไปตั้งแต่ระดับ Flask เอง (ก่อนอ่านเข้าหน่วยความจำทั้งไฟล์) — ดู MAX_PHOTO_BYTES
+app.config["MAX_CONTENT_LENGTH"] = 9 * 1024 * 1024
 
 _ws_cache = {}
 _ws_lock = threading.Lock()
@@ -366,6 +375,77 @@ def api_update_status(ticket_no):
     })
     # ส่งเคสที่อัปเดตแล้วกลับไปด้วย เพื่อให้หน้าเว็บอัปเดตข้อมูลในตัวเองได้เลย
     # ไม่ต้องยิง /api/cases โหลดทั้งชีตใหม่ทุกครั้ง (อีกจุดที่ทำให้ก่อนหน้านี้ช้า)
+    return jsonify(ok=True, ticketNo=case["ticketNo"], case=updated_case)
+
+
+# ประเภทไฟล์รูปภาพที่รับอัปโหลด และขนาดสูงสุด (ไบต์) — คู่กับ app.config["MAX_CONTENT_LENGTH"] ด้านบน
+ALLOWED_PHOTO_TYPES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif"}
+MAX_PHOTO_BYTES = 8 * 1024 * 1024
+
+
+@app.post("/api/cases/<ticket_no>/photo")
+@staff_required
+def api_upload_case_photo(ticket_no):
+    # เพิ่ม/แก้ไขรูปภาพประกอบเคส — พนักงานทุกคน (ไม่ใช่แค่แอดมิน) มีสิทธิ์ทำได้ (@staff_required อนุญาตทั้ง
+    # staff และ admin) หน้าเว็บจะให้ยืนยันก่อนอัปโหลดจริงอยู่แล้ว ฝั่ง backend นี้จึงไม่มีขั้นตอนยืนยันซ้ำอีก
+    if not DRIVE_UPLOAD_FOLDER_ID:
+        return jsonify(ok=False, error="ระบบยังไม่ได้ตั้งค่าโฟลเดอร์ Google Drive สำหรับอัปโหลดรูปภาพ "
+                                        "(DRIVE_UPLOAD_FOLDER_ID) กรุณาติดต่อผู้ดูแลระบบ"), 500
+
+    row_i, case = find_case(ticket_no)
+    if not case:
+        return jsonify(ok=False, error="ไม่พบเคสนี้ในระบบ"), 404
+
+    file = request.files.get("photo")
+    if not file or not file.filename:
+        return jsonify(ok=False, error="กรุณาเลือกไฟล์รูปภาพ"), 400
+
+    mimetype = file.mimetype or ""
+    if mimetype not in ALLOWED_PHOTO_TYPES:
+        return jsonify(ok=False, error="รองรับเฉพาะไฟล์รูปภาพ (JPG, PNG, WEBP, GIF)"), 400
+
+    file_bytes = file.read()
+    if len(file_bytes) > MAX_PHOTO_BYTES:
+        return jsonify(ok=False, error="ไฟล์รูปภาพใหญ่เกินไป (สูงสุดไม่เกิน 8MB)"), 400
+    if not file_bytes:
+        return jsonify(ok=False, error="ไฟล์รูปภาพว่างเปล่า"), 400
+
+    try:
+        # import ตรงนี้ (lazy) แทนบนสุดของไฟล์ เพื่อไม่ให้การสร้าง Drive client ไปทำ network call
+        # ตอนแอปสตาร์ทขึ้น (จะได้ไม่เพิ่มความเสี่ยงต่อ retry/startup logic ของการเชื่อมต่อ Sheets ด้านบน)
+        from googleapiclient.discovery import build
+        from googleapiclient.http import MediaIoBaseUpload
+        drive = build("drive", "v3", credentials=_creds, cache_discovery=False)
+        ext = ALLOWED_PHOTO_TYPES[mimetype]
+        media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mimetype, resumable=False)
+        file_meta = {
+            "name": f"{case['ticketNo']}_{secrets.token_hex(4)}.{ext}",
+            "parents": [DRIVE_UPLOAD_FOLDER_ID],
+        }
+        created = drive.files().create(body=file_meta, media_body=media, fields="id").execute()
+        file_id = created["id"]
+        # แชร์เป็นสาธารณะแบบ "ใครมีลิงก์ก็ดูได้" (เหมือนรูปภาพเดิมที่ sync มาจาก AppSheet) เพื่อให้
+        # driveThumbUrl()/handlePhotoError() ฝั่งหน้าเว็บ (ที่มี fallback URL หลายแบบ) แสดงผลได้ปกติ
+        drive.permissions().create(fileId=file_id, body={"type": "anyone", "role": "reader"}).execute()
+    except Exception as e:  # noqa: BLE001 — ครอบคลุม error จาก Drive API ทุกแบบ (สิทธิ์ไม่พอ/API ยังไม่เปิด/ฯลฯ)
+        return jsonify(ok=False, error="อัปโหลดรูปภาพไม่สำเร็จ: " + str(e)), 502
+
+    photo_url = f"https://drive.google.com/uc?export=view&id={file_id}"
+    now = now_str()
+    nickname = session["nickname"]
+    had_photo_before = bool((case.get("photoUrl") or "").strip())
+
+    sheet = ws(SHEET_CASES)
+    sheet.update(f"H{row_i}", [[photo_url]], value_input_option="USER_ENTERED")
+    # อัปเดต "พนักงานดูแล" (lastStaff) เป็นชื่อพนักงานที่ดำเนินการอัปโหลด/แก้ไขรูปภาพครั้งนี้ ตามที่ขอ
+    sheet.update(f"L{row_i}:M{row_i}", [[nickname, now]], value_input_option="USER_ENTERED")
+
+    note = "แก้ไขรูปภาพประกอบเคส" if had_photo_before else "เพิ่มรูปภาพประกอบเคส"
+    append_log(case["ticketNo"], case.get("lastChannel") or "", case["status"], note,
+               session["username"], nickname)
+
+    updated_case = dict(case)
+    updated_case.update({"photoUrl": photo_url, "lastStaff": nickname, "updatedAt": now})
     return jsonify(ok=True, ticketNo=case["ticketNo"], case=updated_case)
 
 

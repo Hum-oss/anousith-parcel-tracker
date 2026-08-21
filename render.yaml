@@ -14,6 +14,10 @@ services:
         sync: false
       - key: GOOGLE_CREDENTIALS_JSON
         sync: false
+      # ไอดีโฟลเดอร์ Google Drive สำหรับอัปโหลดรูปภาพเคส (ฟีเจอร์เพิ่ม/แก้ไขรูปภาพในหน้ารายละเอียดเคส)
+      # ต้องแชร์โฟลเดอร์นี้ให้อีเมลของ service account เป็นสิทธิ์ "ผู้แก้ไข (Editor)" ก่อน — ดู README.md
+      - key: DRIVE_UPLOAD_FOLDER_ID
+        sync: false
       - key: FLASK_DEBUG
         value: "0"
       - key: PYTHON_VERSION

@@ -189,6 +189,9 @@ const state = {
   pendingStatus: null,
   caseHistory: [],
   caseHistoryLoading: false,
+  pendingPhotoFile: null,
+  pendingPhotoPreviewUrl: null,
+  photoUploading: false,
   exportBusy: false,
 
   users: [], usersLoaded: false, usersLoading: false,
@@ -343,7 +346,11 @@ function toggleDashboardFilter(type, value) {
 function clearDashboardFilter() { setState({ dashboardFilter: null, reportStatusFilter: [] }); }
 
 async function openCase(ticketNo) {
-  setState({ selectedTicket: ticketNo, pendingStatus: null, caseHistory: [], caseHistoryLoading: true });
+  if (state.pendingPhotoPreviewUrl) URL.revokeObjectURL(state.pendingPhotoPreviewUrl);
+  setState({
+    selectedTicket: ticketNo, pendingStatus: null, caseHistory: [], caseHistoryLoading: true,
+    pendingPhotoFile: null, pendingPhotoPreviewUrl: null, photoUploading: false,
+  });
   try {
     const res = await apiGet('/api/cases/' + encodeURIComponent(ticketNo));
     if (handleAuthExpired(res)) return;
@@ -353,7 +360,13 @@ async function openCase(ticketNo) {
     setState({ caseHistoryLoading: false });
   }
 }
-function closeCase() { setState({ selectedTicket: null, pendingStatus: null, caseHistory: [], caseHistoryLoading: false }); }
+function closeCase() {
+  if (state.pendingPhotoPreviewUrl) URL.revokeObjectURL(state.pendingPhotoPreviewUrl);
+  setState({
+    selectedTicket: null, pendingStatus: null, caseHistory: [], caseHistoryLoading: false,
+    pendingPhotoFile: null, pendingPhotoPreviewUrl: null, photoUploading: false,
+  });
+}
 function stopProp(ev) { ev.stopPropagation(); }
 
 // เลือกสถานะที่จะเปลี่ยน (ยังไม่บันทึก) — เลือกได้อิสระไม่ต้องเรียงลำดับ กดปุ่มยืนยันด้านล่างถึงจะบันทึกจริง
@@ -385,9 +398,59 @@ async function confirmStatusChange(ticketNo) {
   }
 }
 
-// ส่งออก Excel: /api/export.xlsx เป็น GET + เปิดด้วย window.open() แบบเดียวกับของเดิมที่เคยใช้งานได้ชัวร์
-// (ลองใช้ fetch()+Blob+<a download> มาก่อนหน้านี้ แต่พบว่าดาวน์โหลดไม่ทำงานในบางเบราว์เซอร์/สภาพแวดล้อมจริง
-// จึงย้อนกลับมาใช้วิธี GET เปิดลิงก์ตรงๆ ซึ่งเสถียรกว่า พร้อมแนบรายการเลข ticket ที่กำลังแสดงอยู่จริงไปเป็น query string)
+// ===================== เพิ่ม/แก้ไขรูปภาพประกอบเคส (พนักงานทุกคนมีสิทธิ์) =====================
+// เลือกไฟล์แล้วยังไม่อัปโหลดทันที — ต้องกดยืนยัน (ดู state.pendingPhotoFile) ก่อนถึงจะอัปโหลดจริง
+const ALLOWED_PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
+
+function onPhotoFileSelected(inputEl) {
+  const file = inputEl.files && inputEl.files[0];
+  inputEl.value = ''; // เคลียร์ input ทันที เพื่อให้เลือกไฟล์เดิมซ้ำได้อีกครั้งถ้ายกเลิกแล้วเลือกใหม่
+  if (!file) return;
+  if (!ALLOWED_PHOTO_TYPES.includes(file.type)) { showToast('รองรับเฉพาะไฟล์รูปภาพ (JPG, PNG, WEBP, GIF)'); return; }
+  if (file.size > MAX_PHOTO_BYTES) { showToast('ไฟล์รูปภาพใหญ่เกินไป (สูงสุดไม่เกิน 8MB)'); return; }
+  if (state.pendingPhotoPreviewUrl) URL.revokeObjectURL(state.pendingPhotoPreviewUrl);
+  setState({ pendingPhotoFile: file, pendingPhotoPreviewUrl: URL.createObjectURL(file) });
+}
+
+function cancelPendingPhoto() {
+  if (state.pendingPhotoPreviewUrl) URL.revokeObjectURL(state.pendingPhotoPreviewUrl);
+  setState({ pendingPhotoFile: null, pendingPhotoPreviewUrl: null });
+}
+
+async function confirmPhotoUpload(ticketNo) {
+  if (!state.auth || !state.pendingPhotoFile) return;
+  const file = state.pendingPhotoFile;
+  setState({ photoUploading: true });
+  try {
+    const fd = new FormData();
+    fd.append('photo', file);
+    const res = await fetch('/api/cases/' + encodeURIComponent(ticketNo) + '/photo', {
+      method: 'POST', credentials: 'same-origin', body: fd,
+    });
+    let data;
+    try { data = await res.json(); } catch (e) { data = { ok: false, error: 'เซิร์ฟเวอร์ตอบกลับไม่ถูกต้อง' }; }
+    data.__status = res.status;
+    if (handleAuthExpired(data)) return;
+    if (!data.ok) { showToast(data.error || 'อัปโหลดรูปภาพไม่สำเร็จ'); return; }
+    const cases = data.case ? state.cases.map((c) => (c.ticketNo === ticketNo ? data.case : c)) : state.cases;
+    if (state.pendingPhotoPreviewUrl) URL.revokeObjectURL(state.pendingPhotoPreviewUrl);
+    setState({ cases, pendingPhotoFile: null, pendingPhotoPreviewUrl: null });
+    showToast('บันทึกรูปภาพแล้ว');
+    // โหลดประวัติการติดตามใหม่ เพราะเพิ่งมีรายการล่าสุดถูกบันทึกเพิ่ม (เพิ่ม/แก้ไขรูปภาพ)
+    try {
+      const histRes = await apiGet('/api/cases/' + encodeURIComponent(ticketNo));
+      if (histRes.ok && state.selectedTicket === ticketNo) setState({ caseHistory: histRes.history || [] });
+    } catch (e2) { /* ไม่ต้องแจ้งเตือน แค่ประวัติจะไม่รีเฟรชเฉยๆ */ }
+  } catch (e) {
+    showToast(e.message || 'อัปโหลดรูปภาพไม่สำเร็จ');
+  } finally {
+    setState({ photoUploading: false });
+  }
+}
+
+// ส่งออก Excel: /api/export.xlsx เป็น POST ผ่านฟอร์มจริง (ดูฟังก์ชันด้านล่าง) เพื่อให้ดาวน์โหลดได้ชัวร์
+// และไม่ติดข้อจำกัดความยาว URL เมื่อมีรายการเคสเยอะ
 function onExportExcel(source) {
   if (!state.auth) return;
   const d = computeDerived();
@@ -1056,15 +1119,31 @@ function renderCaseModal() {
               <div style="color:#8A8380;font-size:12.5px;margin-bottom:4px">รายละเอียด</div>
               <div style="font-size:13px;background:#F7F5F3;padding:10px;border-radius:6px;max-height:120px;overflow-y:auto">${esc(c.detail || '-')}</div>
             </div>
-            ${c.photoUrl ? `
             <div style="width:150px;flex-shrink:0">
               <div style="color:#8A8380;font-size:12.5px;margin-bottom:4px">รูปภาพ</div>
               <div style="border-radius:6px;overflow:hidden;border:1px solid #E7E2DF">
+                ${c.photoUrl ? `
                 <img src="${esc(driveThumbUrl(c.photoUrl))}" data-orig="${esc(c.photoUrl)}" data-stage="0" alt="รูปพัสดุ ${esc(c.parcelNo)}" style="width:100%;display:block;aspect-ratio:4/3;object-fit:cover;background:#F1EDEB" onerror="handlePhotoError(this)">
                 <a href="${esc(driveViewUrl(c.photoUrl))}" target="_blank" rel="noopener" style="display:block;text-align:center;padding:4px;font-size:10.5px;font-weight:600;background:#F7F5F3">ดูขนาดปกติ</a>
+                ` : `
+                <div style="aspect-ratio:4/3;background:repeating-linear-gradient(45deg,#F1EDEB,#F1EDEB 8px,#E7E2DF 8px,#E7E2DF 16px);display:flex;align-items:center;justify-content:center;text-align:center;padding:6px">
+                  <span style="font-family:monospace;font-size:10px;color:#8A8380">[ ไม่มีรูปภาพ ]</span>
+                </div>
+                `}
               </div>
-            </div>` : ''}
+              <input type="file" id="photoFileInput" accept="image/jpeg,image/png,image/webp,image/gif" style="display:none" onchange="onPhotoFileSelected(this)">
+              <button onclick="document.getElementById('photoFileInput').click()" style="width:100%;margin-top:6px;background:#fff;border:1px solid #DCD6D3;padding:5px 0;border-radius:4px;font-size:11px;font-weight:700;cursor:pointer;color:#3D3835">${c.photoUrl ? 'แก้ไขรูปภาพ' : '+ เพิ่มรูปภาพ'}</button>
+            </div>
           </div>
+          ${state.pendingPhotoFile ? `
+          <div style="display:flex;align-items:center;gap:12px;background:#F7F5F3;border-radius:6px;padding:10px 12px">
+            <img src="${esc(state.pendingPhotoPreviewUrl)}" alt="ตัวอย่างรูปภาพใหม่" style="width:64px;height:64px;object-fit:cover;border-radius:4px;border:1px solid #E7E2DF;flex-shrink:0">
+            <div style="flex:1;font-size:12px;color:#4A4442">ยืนยัน${c.photoUrl ? 'แก้ไข' : 'เพิ่ม'}รูปภาพนี้เป็นรูปประกอบเคส?</div>
+            <div style="display:flex;gap:8px;flex-shrink:0">
+              <button onclick="cancelPendingPhoto()" ${state.photoUploading ? 'disabled' : ''} style="background:#fff;border:1px solid #DCD6D3;padding:5px 12px;border-radius:4px;font-size:12px;font-weight:700;cursor:pointer;color:#5A5450">ยกเลิก</button>
+              <button onclick="confirmPhotoUpload('${esc(c.ticketNo)}')" ${state.photoUploading ? 'disabled' : ''} style="background:#D6201F;color:#fff;border:none;padding:5px 12px;border-radius:4px;font-size:12px;font-weight:700;cursor:pointer">${state.photoUploading ? 'กำลังอัปโหลด...' : 'ยืนยัน'}</button>
+            </div>
+          </div>` : ''}
           <div>
             <div style="color:#8A8380;font-size:12.5px;margin-bottom:6px">สถานะปัจจุบัน</div>
             <div style="display:flex;gap:6px;flex-wrap:wrap">
