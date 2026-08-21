@@ -369,17 +369,20 @@ def api_update_status(ticket_no):
     return jsonify(ok=True, ticketNo=case["ticketNo"], case=updated_case)
 
 
-@app.get("/api/export.xlsx")
+@app.post("/api/export.xlsx")
 @staff_required
 def api_export_excel():
-    # รับรายการเลขแจ้งเรื่อง (tickets) ที่หน้าเว็บกรอง/แสดงอยู่ตรงๆ มาเป็น query string (คั่นด้วย comma)
+    # รับรายการเลขแจ้งเรื่อง (tickets) ที่หน้าเว็บกรอง/แสดงอยู่ตรงๆ มาทาง POST body (ฟอร์ม ไม่ใช่ query string)
     # แทนที่จะให้ backend คำนวณเงื่อนไขกรองซ้ำ — รับประกันว่าไฟล์ที่ออกมาตรงกับที่เห็นบนหน้าจอ 100%
     # (ไม่ว่าจะเป็นหน้าแดชบอร์ดหรือหน้าเคสแจ้งเรื่อง ซึ่งมีเงื่อนไขกรองต่างกัน)
-    # ใช้ GET + window.open() แบบเดิม (ไม่ใช้ fetch+Blob) เพื่อให้ดาวน์โหลดได้ชัวร์ในทุกเบราว์เซอร์
-    tickets_raw = request.args.get("tickets") or ""
+    # เดิมเคยลองใช้ GET + query string (tickets คั่นด้วย comma) แต่พอเคสมีจำนวนมาก URL ยาวเกินไปจน
+    # เซิร์ฟเวอร์/พร็อกซีปฏิเสธคำขอ (Request Line too large) จึงเปลี่ยนมาส่งทาง POST body แทน
+    # ฝั่งหน้าเว็บใช้การ submit <form method="POST"> จริง (ไม่ใช่ fetch+Blob) เพื่อให้เบราว์เซอร์ดาวน์โหลด
+    # ไฟล์ให้เองแบบเดียวกับการเปิดลิงก์ตรงๆ — ไม่มีข้อจำกัดเรื่องความยาว URL และยังดาวน์โหลดได้ชัวร์เหมือนเดิม
+    tickets_raw = request.form.get("tickets") or request.args.get("tickets") or ""
     tickets = [t.strip() for t in tickets_raw.split(",") if t.strip()]
-    date_from = request.args.get("dateFrom") or ""
-    date_to = request.args.get("dateTo") or ""
+    date_from = request.form.get("dateFrom") or request.args.get("dateFrom") or ""
+    date_to = request.form.get("dateTo") or request.args.get("dateTo") or ""
 
     if not tickets:
         return jsonify(ok=False, error="ไม่มีรายการเคสให้ออกรายงาน"), 400

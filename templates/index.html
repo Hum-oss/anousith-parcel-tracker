@@ -394,9 +394,28 @@ function onExportExcel(source) {
   const list = source === 'dashboard' ? d.filteredCases : d.casesSorted;
   const tickets = list.map((c) => c.ticketNo);
   if (!tickets.length) { showToast('ไม่มีรายการเคสให้ออกรายงาน'); return; }
-  const { dateFrom, dateTo } = currentRangeDates();
-  const url = '/api/export.xlsx' + qs({ tickets: tickets.join(','), dateFrom, dateTo });
-  window.open(url, '_blank');
+  // ตัวกรองวันที่ของแต่ละหน้าคำนวณแยกกัน (แดชบอร์ดใช้ currentRangeDates, เคสแจ้งเรื่องใช้ casesRangeDates ของตัวเอง)
+  // ใช้แค่ประกอบชื่อไฟล์/สรุปในรายงาน ไม่ได้ใช้กรองข้อมูลซ้ำฝั่ง backend (ฝั่งหน้าเว็บกรองมาให้แล้วผ่านรายการ tickets)
+  const { dateFrom, dateTo } = source === 'dashboard' ? currentRangeDates() : casesRangeDates();
+  // ส่งเป็นฟอร์ม POST จริง (ไม่ใช่ fetch+Blob และไม่ใช่ query string) เพื่อเลี่ยงข้อจำกัดความยาว URL
+  // เมื่อมีเคสจำนวนมาก (เคยเจอปัญหา "Request Line too large" ตอนใช้ GET + query string) และยังให้
+  // เบราว์เซอร์ดาวน์โหลดไฟล์ให้เองแบบเดียวกับเปิดลิงก์ตรงๆ ซึ่งเสถียรกว่าการดาวน์โหลดผ่าน JS Blob
+  const form = document.createElement('form');
+  form.method = 'POST';
+  form.action = '/api/export.xlsx';
+  form.target = '_blank';
+  form.style.display = 'none';
+  const addField = (name, value) => {
+    const input = document.createElement('input');
+    input.type = 'hidden'; input.name = name; input.value = value;
+    form.appendChild(input);
+  };
+  addField('tickets', tickets.join(','));
+  addField('dateFrom', dateFrom || '');
+  addField('dateTo', dateTo || '');
+  document.body.appendChild(form);
+  form.submit();
+  document.body.removeChild(form);
 }
 
 function saveDashboardImage() {
