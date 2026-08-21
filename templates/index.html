@@ -254,7 +254,7 @@ async function onSearch() {
 async function onConfirmContact() {
   const name = document.getElementById('confirmName').value.trim();
   const phone = document.getElementById('confirmPhone').value.trim();
-  if (!name || !phone) { setState({ contactFormError: 'กรุณากรอกชื่อผู้แจ้งและเบอร์โทรศัพท์' }); return; }
+  if (!name || !phone) { setState({ contactFormError: 'กรุณากรอกชื่อและที่อยู่ผู้แจ้งและเบอร์โทรศัพท์' }); return; }
   const r = state.searchResult;
   if (!r) return;
   setState({ contactFormSubmitting: true, contactFormError: null });
@@ -274,7 +274,7 @@ async function onSubmitReport() {
   const phone = document.getElementById('reportPhone').value.trim();
   const detail = document.getElementById('reportDetail').value.trim();
   if (!parcelNo) { setState({ reportError: 'กรุณากรอกเลขพัสดุ' }); return; }
-  if (!name || !phone) { setState({ reportError: 'กรุณากรอกชื่อและเบอร์โทรติดต่อกลับ' }); return; }
+  if (!name || !phone) { setState({ reportError: 'กรุณากรอกชื่อและที่อยู่ผู้แจ้งและเบอร์โทรติดต่อกลับ' }); return; }
   setState({ reportSubmitting: true, reportError: null });
   try {
     const res = await apiPost('/api/complaints', { parcelNo, company, name, phone, detail });
@@ -577,7 +577,7 @@ function renderPublic() {
   if (s.view === 'search') {
     body += `
     <section style="background:linear-gradient(180deg,#D6201F,#B3160F);padding:22px 16px 34px;text-align:center">
-      <h1 style="font-family:'Prompt',sans-serif;color:#fff;font-size:clamp(18px,3.5vw,26px);margin:0 0 6px;letter-spacing:.3px">ค้นหาพัสดุ / เรื่องร้องเรียน</h1>
+      <h1 style="font-family:'Prompt',sans-serif;color:#fff;font-size:clamp(18px,3.5vw,26px);margin:0 0 6px;letter-spacing:.3px">ค้นหาพัสดุ / แจ้งเรื่อง</h1>
       <p style="color:#F8D9D8;font-size:13px;margin:0 0 16px">กรอกเลขพัสดุ หรือเลขแจ้งเรื่อง (RQ...) เพื่อตรวจสอบสถานะล่าสุด</p>
       <div style="max-width:480px;margin:0 auto;display:flex;flex-direction:column;gap:8px;background:#fff;padding:8px;border-radius:8px;box-shadow:0 12px 30px rgba(0,0,0,0.18)">
         <input id="searchQuery" placeholder="เลขพัสดุ หรือเลขแจ้งเรื่อง" onkeydown="if(event.key==='Enter')onSearch()" style="border:1px solid #EEEAE8;border-radius:5px;outline:none;padding:13px 14px;font-size:15px;color:#221F1F;width:100%">
@@ -591,7 +591,7 @@ function renderPublic() {
       body += `
       <div style="background:#fff;border-radius:8px;box-shadow:0 10px 26px rgba(0,0,0,0.08);padding:28px 22px;text-align:center" class="fadein">
         <div style="font-size:16px;font-weight:700;color:#B3160F;margin-bottom:6px">ไม่พบข้อมูล</div>
-        <div style="font-size:13.5px;color:#726B68">ไม่พบเลขพัสดุ/เลขแจ้งเรื่องนี้ในระบบ (ระบบค้นหาได้เฉพาะพัสดุที่มีการแจ้งเรื่องร้องเรียนแล้วเท่านั้น) กรุณาแจ้งเรื่องเพื่อให้เจ้าหน้าที่ช่วยตามหา</div>
+        <div style="font-size:13.5px;color:#726B68">ไม่พบเลขพัสดุ/เลขแจ้งเรื่องนี้ในระบบ (ระบบค้นหาได้เฉพาะพัสดุที่มีการแจ้งเรื่องแล้วเท่านั้น) กรุณาแจ้งเรื่องเพื่อให้เจ้าหน้าที่ช่วยตามหา</div>
         <div class="clickable" onclick="goReport()" style="margin-top:16px;display:inline-block;background:#D6201F;color:#fff;padding:11px 22px;border-radius:4px;font-weight:700;font-size:14px">แจ้งเรื่องตามหาพัสดุ</div>
       </div>`;
     }
@@ -641,8 +641,8 @@ function renderPublic() {
             <div style="font-size:13.5px;color:#2E7D32;font-weight:700">✓ บันทึกข้อมูลติดต่อแล้ว เจ้าหน้าที่จะติดต่อกลับ</div>
           ` : `
             <div style="font-size:13px;font-weight:700;margin-bottom:10px;font-family:'Prompt',sans-serif">ยืนยันข้อมูลติดต่อ (สำหรับให้เจ้าหน้าที่ติดต่อกลับ)</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px">
-              <input id="confirmName" placeholder="ชื่อผู้แจ้ง" style="width:100%;padding:9px 12px;border:1px solid #DCD6D3;border-radius:4px;font-size:13.5px">
+            <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:8px">
+              <textarea id="confirmName" placeholder="ชื่อและที่อยู่ผู้แจ้ง" rows="2" style="width:100%;padding:9px 12px;border:1px solid #DCD6D3;border-radius:4px;font-size:13.5px;resize:vertical;font-family:inherit"></textarea>
               <input id="confirmPhone" placeholder="เบอร์โทรศัพท์" style="width:100%;padding:9px 12px;border:1px solid #DCD6D3;border-radius:4px;font-size:13.5px">
             </div>
             ${s.contactFormError ? `<div style="color:#B3160F;font-size:12px;font-weight:600;margin-bottom:8px">${esc(s.contactFormError)}</div>` : ''}
@@ -690,21 +690,19 @@ function renderReportForm(insideModal) {
         </div>
       </div>
       ${s.reportError ? `<div style="color:#B3160F;font-size:12px;font-weight:600;margin-top:-6px">${esc(s.reportError)}</div>` : ''}
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-        <div>
-          <label style="font-size:12.5px;font-weight:600;color:#4A4442;display:block;margin-bottom:5px">ชื่อผู้แจ้ง</label>
-          <input id="reportName" placeholder="ชื่อ-นามสกุล" style="width:100%;padding:9px 12px;border:1px solid #DCD6D3;border-radius:4px;font-size:13.5px">
-        </div>
-        <div>
-          <label style="font-size:12.5px;font-weight:600;color:#4A4442;display:block;margin-bottom:5px">เบอร์โทรติดต่อ/WhatsApp</label>
-          <input id="reportPhone" placeholder="08X-XXX-XXXX" style="width:100%;padding:9px 12px;border:1px solid #DCD6D3;border-radius:4px;font-size:13.5px">
-        </div>
+      <div>
+        <label style="font-size:12.5px;font-weight:600;color:#4A4442;display:block;margin-bottom:5px">ชื่อและที่อยู่ผู้แจ้ง</label>
+        <textarea id="reportName" placeholder="ชื่อ-นามสกุล และที่อยู่สำหรับติดต่อกลับ" rows="2" style="width:100%;padding:9px 12px;border:1px solid #DCD6D3;border-radius:4px;font-size:13.5px;resize:vertical;font-family:inherit"></textarea>
+      </div>
+      <div>
+        <label style="font-size:12.5px;font-weight:600;color:#4A4442;display:block;margin-bottom:5px">เบอร์โทรติดต่อ/WhatsApp</label>
+        <input id="reportPhone" placeholder="08X-XXX-XXXX" style="width:100%;padding:9px 12px;border:1px solid #DCD6D3;border-radius:4px;font-size:13.5px">
       </div>
       <div>
         <label style="font-size:12.5px;font-weight:600;color:#4A4442;display:block;margin-bottom:5px">รายละเอียดปัญหา</label>
         <textarea id="reportDetail" placeholder="อธิบายปัญหา เช่น พัสดุล่าช้า ยังไม่ได้รับ ฯลฯ" rows="3" style="width:100%;padding:9px 12px;border:1px solid #DCD6D3;border-radius:4px;font-size:13.5px;resize:vertical"></textarea>
       </div>
-      <button onclick="onSubmitReport()" style="margin-top:2px;background:#D6201F;color:#fff;border:none;padding:11px;border-radius:4px;font-size:14px;font-weight:700;cursor:pointer">${s.reportSubmitting ? 'กำลังส่ง...' : 'ส่งเรื่องร้องเรียน'}</button>
+      <button onclick="onSubmitReport()" style="margin-top:2px;background:#D6201F;color:#fff;border:none;padding:11px;border-radius:4px;font-size:14px;font-weight:700;cursor:pointer">${s.reportSubmitting ? 'กำลังส่ง...' : 'ส่งแจ้งเรื่อง'}</button>
     </div>`;
   if (insideModal) return form;
   return `
@@ -735,7 +733,7 @@ function renderStaff() {
   const s = state;
   const isAdmin = s.auth && s.auth.role === 'admin';
   const roleLabel = isAdmin ? 'แอดมิน' : 'พนักงาน';
-  const pageTitles = { dashboard: 'แดชบอร์ด', cases: 'เคสร้องเรียน', users: 'ผู้ใช้งาน' };
+  const pageTitles = { dashboard: 'แดชบอร์ด', cases: 'เคสแจ้งเรื่อง', users: 'ผู้ใช้งาน' };
 
   let pageBody = '';
   if (s.casesLoading && !s.casesLoaded) {
@@ -758,10 +756,9 @@ function renderStaff() {
       </div>
       <nav style="padding:14px;display:flex;flex-direction:column;gap:4px;flex:1">
         <div class="clickable" onclick="goStaffPage('dashboard')" style="padding:11px 14px;border-radius:5px;font-size:14px;font-weight:600;background:${s.staffPage === 'dashboard' ? '#D6201F' : 'transparent'};color:${s.staffPage === 'dashboard' ? '#fff' : '#D9D4D1'}">แดชบอร์ด</div>
-        <div class="clickable" onclick="goStaffPage('cases')" style="padding:11px 14px;border-radius:5px;font-size:14px;font-weight:600;background:${s.staffPage === 'cases' ? '#D6201F' : 'transparent'};color:${s.staffPage === 'cases' ? '#fff' : '#D9D4D1'}">เคสร้องเรียน</div>
+        <div class="clickable" onclick="goStaffPage('cases')" style="padding:11px 14px;border-radius:5px;font-size:14px;font-weight:600;background:${s.staffPage === 'cases' ? '#D6201F' : 'transparent'};color:${s.staffPage === 'cases' ? '#fff' : '#D9D4D1'}">เคสแจ้งเรื่อง</div>
         ${isAdmin ? `<div class="clickable" onclick="goStaffPage('users')" style="padding:11px 14px;border-radius:5px;font-size:14px;font-weight:600;background:${s.staffPage === 'users' ? '#D6201F' : 'transparent'};color:${s.staffPage === 'users' ? '#fff' : '#D9D4D1'}">ผู้ใช้งาน</div>` : ''}
       </nav>
-      <div class="clickable" onclick="doLogout()" style="padding:16px 20px;border-top:1px solid #3A3432;font-size:13px;color:#B7B2AF">← ออกจากระบบ</div>
     </aside>
     <div style="flex:1;background:#F7F5F3;min-width:0">
       <header style="background:#fff;border-bottom:1px solid #EEEAE8;padding:16px 32px;display:flex;justify-content:space-between;align-items:center">
@@ -769,6 +766,7 @@ function renderStaff() {
         <div style="display:flex;align-items:center;gap:10px">
           <span style="font-size:12px;background:#FBEAE9;color:#B3160F;padding:5px 12px;border-radius:20px;font-weight:700">${esc(roleLabel)} · ${esc(s.auth ? s.auth.nickname : '')}</span>
           <div style="width:34px;height:34px;border-radius:50%;background:#221F1F;color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700">${esc((s.auth && s.auth.nickname ? s.auth.nickname[0] : 'U'))}</div>
+          <span class="clickable" onclick="doLogout()" style="font-size:12.5px;color:#8A8380;font-weight:600;border-left:1px solid #EEEAE8;padding-left:10px">← ออกจากระบบ</span>
         </div>
       </header>
       <div style="padding:28px 32px">${pageBody}</div>
@@ -881,7 +879,7 @@ function renderCases() {
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
       <div style="font-size:13px;color:#8A8380">ทั้งหมด ${d.casesSorted.length} เรื่อง${d.dashFilterActive ? ' (กรองอยู่)' : ''}</div>
       <div style="display:flex;gap:10px">
-        <button onclick="openReportModal()" style="background:#D6201F;color:#fff;border:none;padding:9px 18px;border-radius:4px;font-size:13px;font-weight:700;cursor:pointer">+ เพิ่มเรื่องร้องเรียน</button>
+        <button onclick="openReportModal()" style="background:#D6201F;color:#fff;border:none;padding:9px 18px;border-radius:4px;font-size:13px;font-weight:700;cursor:pointer">+ แจ้งเรื่องใหม่</button>
         <button onclick="onExportExcel()" style="background:#fff;border:1px solid #DCD6D3;padding:9px 18px;border-radius:4px;font-size:13px;font-weight:700;cursor:pointer;color:#3D3835">${s.exportBusy ? '...' : '⬇ ส่งออก Excel'}</button>
       </div>
     </div>
@@ -902,7 +900,7 @@ function renderCases() {
               <td style="padding:12px 16px"><span style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;background:${sc.bg};color:${sc.color}">${esc(c.status)}</span></td>
               <td style="padding:12px 16px;text-align:right"><span class="clickable" onclick="openCase('${esc(c.ticketNo)}')" style="color:#D6201F;font-weight:700">ดู</span></td>
             </tr>`;
-          }).join('') : `<tr><td colspan="7" style="padding:24px;text-align:center;color:#A39C99">ไม่มีเรื่องร้องเรียนในช่วงที่เลือก</td></tr>`}
+          }).join('') : `<tr><td colspan="7" style="padding:24px;text-align:center;color:#A39C99">ไม่มีรายการแจ้งเรื่องในช่วงที่เลือก</td></tr>`}
         </tbody>
       </table>
     </div>
@@ -1003,7 +1001,7 @@ function renderReportModal() {
   <div style="position:fixed;inset:0;background:rgba(34,31,31,0.5);display:flex;align-items:center;justify-content:center;z-index:50;padding:20px" onclick="closeReportModal()">
     <div style="background:#fff;border-radius:8px;width:520px;max-width:100%;max-height:90vh;overflow:auto" onclick="stopProp(event)">
       <div style="padding:18px 22px;border-bottom:1px solid #EEEAE8;display:flex;justify-content:space-between;align-items:center">
-        <div style="font-size:16px;font-weight:700;font-family:'Prompt',sans-serif">เพิ่มเรื่องร้องเรียน</div>
+        <div style="font-size:16px;font-weight:700;font-family:'Prompt',sans-serif">แจ้งเรื่องพัสดุ</div>
         <span class="clickable" onclick="closeReportModal()" style="font-size:18px;color:#8A8380">✕</span>
       </div>
       <div style="padding:18px 22px">${renderReportForm(true)}</div>

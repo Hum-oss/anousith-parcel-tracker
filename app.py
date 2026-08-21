@@ -255,7 +255,7 @@ def api_submit_complaint():
     if not parcel_no:
         return jsonify(ok=False, error="ต้องระบุเลขพัสดุ — หากไม่ทราบเลขพัสดุ กรุณาสอบถามเจ้าหน้าที่ก่อน"), 400
     if not name or not phone:
-        return jsonify(ok=False, error="กรุณากรอกชื่อและเบอร์โทรติดต่อกลับ"), 400
+        return jsonify(ok=False, error="กรุณากรอกชื่อและที่อยู่ผู้แจ้ง และเบอร์โทรติดต่อกลับ"), 400
 
     row_i, existing = find_case(parcel_no)
     now = now_str()
@@ -266,18 +266,18 @@ def api_submit_complaint():
         if not existing["phone"]:
             sheet.update_cell(row_i, 6, phone)
         append_log(existing["ticketNo"], "อื่นๆ", existing["status"],
-                   "ผู้รับแจ้งร้องเรียนเพิ่มเติม: " + (data.get("detail") or "-"),
-                   "ผู้รับ (ร้องเรียนเอง)", "-")
+                   "ผู้รับแจ้งเรื่องเพิ่มเติม: " + (data.get("detail") or "-"),
+                   "ผู้รับ (แจ้งเรื่องเอง)", "-")
         return jsonify(ok=True, ticketNo=existing["ticketNo"], matched=True)
 
     ticket_no = generate_ticket_no()
     ws(SHEET_CASES).append_row([
-        ticket_no, parcel_no, data.get("company") or "", "ผู้รับร้องเรียน", name, phone,
+        ticket_no, parcel_no, data.get("company") or "", "ผู้รับแจ้งเรื่อง", name, phone,
         data.get("detail") or "", "", now, "รอติดตาม", "", "", now, "",
     ], value_input_option="USER_ENTERED")
     append_log(ticket_no, "อื่นๆ", "รอติดตาม",
-               "เปิดเรื่องโดยผู้รับผ่านฟอร์มร้องเรียน: " + (data.get("detail") or "-"),
-               "ผู้รับ (ร้องเรียนเอง)", "-")
+               "เปิดเรื่องโดยผู้รับผ่านฟอร์มแจ้งเรื่อง: " + (data.get("detail") or "-"),
+               "ผู้รับ (แจ้งเรื่องเอง)", "-")
     return jsonify(ok=True, ticketNo=ticket_no, matched=False)
 
 
@@ -392,7 +392,7 @@ def api_export_excel():
     wb = Workbook()
     wsx = wb.active
     wsx.title = "รายละเอียดเคส"
-    header = ["เลขแจ้งเรื่อง", "เลขพัสดุ", "บริษัทขนส่ง", "แหล่งที่มา", "ชื่อผู้ร้องเรียน", "เบอร์โทร",
+    header = ["เลขแจ้งเรื่อง", "เลขพัสดุ", "บริษัทขนส่ง", "แหล่งที่มา", "ชื่อและที่อยู่ผู้แจ้ง", "เบอร์โทร",
               "รายละเอียด", "รูปภาพ", "วันที่เปิดเรื่อง", "สถานะปัจจุบัน", "ช่องทางล่าสุด",
               "เจ้าหน้าที่ล่าสุด", "วันที่อัปเดตล่าสุด", "วันที่ปิดเรื่อง"]
     wsx.append(header)
