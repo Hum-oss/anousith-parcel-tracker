@@ -32,14 +32,14 @@
  * ===================================================================== */
 
 // ตรงกับ STATUSES ใน app.py / Code_2.gs เป๊ะๆ — ห้ามแก้ชื่อสถานะ เพราะ backend ตรวจสอบตรงตัว
-const STATUS_FLOW = ['รอติดตาม', 'กำลังติดตาม', 'ส่งสาขา', 'ปิดเรื่อง'];
+const STATUS_FLOW = ['รอติดตาม', 'กำลังติดตาม', 'ส่งสาขา', 'ส่งสาขา/ปิดเรื่อง'];
 const STATUS_COLORS = {
   'รอติดตาม': { bg: '#EFEDEC', color: '#5A5450' },
   'กำลังติดตาม': { bg: '#FCEFDB', color: '#B5730A' },
   'ส่งสาขา': { bg: '#DDEAFB', color: '#1E5FA8' },
-  'ปิดเรื่อง': { bg: '#DFF1E1', color: '#2E7D32' },
+  'ส่งสาขา/ปิดเรื่อง': { bg: '#DFF1E1', color: '#2E7D32' },
 };
-const DONUT_COLORS = { 'รอติดตาม': '#A39C99', 'กำลังติดตาม': '#EE9E3A', 'ส่งสาขา': '#3B82D6', 'ปิดเรื่อง': '#2E7D32' };
+const DONUT_COLORS = { 'รอติดตาม': '#A39C99', 'กำลังติดตาม': '#EE9E3A', 'ส่งสาขา': '#3B82D6', 'ส่งสาขา/ปิดเรื่อง': '#2E7D32' };
 
 // ตรงกับ CONFIG.CHANNELS ใน Code_2.gs — แก้เฉพาะจุดที่โค้ดเดิมมี stray comma (ช่องว่าง undefined)
 // และสะกด "whatapp" ใหม่เป็น "WhatsApp" เฉพาะฝั่งหน้าเว็บนี้ (ไม่แตะ Apps Script เดิม)
@@ -185,6 +185,8 @@ const state = {
   dashboardFilter: null, // {type, value}
   selectedTicket: null,
   pendingStatus: null,
+  caseHistory: [],
+  caseHistoryLoading: false,
   exportBusy: false,
 
   users: [], usersLoaded: false, usersLoading: false,
@@ -293,7 +295,7 @@ async function onSubmitReport() {
 function openReportModal() { setState({ reportOpen: true, reportSubmitted: false, reportError: null }); }
 function closeReportModal() { setState({ reportOpen: false }); }
 
-function goStaffPage(page) { setState({ staffPage: page, dashboardFilter: null }); if (page === 'users' && !state.usersLoaded) loadUsers(); }
+function goStaffPage(page) { setState({ staffPage: page, dashboardFilter: null, selectedTicket: null, pendingStatus: null }); if (page === 'users' && !state.usersLoaded) loadUsers(); }
 
 async function loadCases() {
   if (!state.auth) return;
@@ -337,8 +339,18 @@ function toggleDashboardFilter(type, value) {
 }
 function clearDashboardFilter() { setState({ dashboardFilter: null, reportStatusFilter: [] }); }
 
-function openCase(ticketNo) { setState({ selectedTicket: ticketNo, pendingStatus: null }); }
-function closeCase() { setState({ selectedTicket: null, pendingStatus: null }); }
+async function openCase(ticketNo) {
+  setState({ selectedTicket: ticketNo, pendingStatus: null, caseHistory: [], caseHistoryLoading: true });
+  try {
+    const res = await apiGet('/api/cases/' + encodeURIComponent(ticketNo));
+    if (handleAuthExpired(res)) return;
+    if (state.selectedTicket !== ticketNo) return; // ผู้ใช้กดเปลี่ยนเคส/กลับไปแล้วก่อนโหลดเสร็จ
+    setState({ caseHistory: res.ok ? (res.history || []) : [], caseHistoryLoading: false });
+  } catch (e) {
+    setState({ caseHistoryLoading: false });
+  }
+}
+function closeCase() { setState({ selectedTicket: null, pendingStatus: null, caseHistory: [], caseHistoryLoading: false }); }
 function stopProp(ev) { ev.stopPropagation(); }
 
 // เลือกสถานะที่จะเปลี่ยน (ยังไม่บันทึก) — เลือกได้อิสระไม่ต้องเรียงลำดับ กดปุ่มยืนยันด้านล่างถึงจะบันทึกจริง
@@ -360,47 +372,28 @@ async function confirmStatusChange(ticketNo) {
     const cases = res.case ? state.cases.map((c) => (c.ticketNo === ticketNo ? res.case : c)) : state.cases;
     setState({ loading: false, cases, pendingStatus: null });
     showToast('อัปเดตสถานะแล้ว');
+    // โหลดประวัติการติดตามใหม่ เพราะเพิ่งมีรายการล่าสุดถูกบันทึกเพิ่ม
+    try {
+      const histRes = await apiGet('/api/cases/' + encodeURIComponent(ticketNo));
+      if (histRes.ok && state.selectedTicket === ticketNo) setState({ caseHistory: histRes.history || [] });
+    } catch (e2) { /* ไม่ต้องแจ้งเตือน แค่ประวัติจะไม่รีเฟรชเฉยๆ */ }
   } catch (e) {
     setState({ loading: false }); showToast(e.message || 'อัปเดตสถานะไม่สำเร็จ');
   }
 }
 
-// ส่งออก Excel: ส่งรายการเลขแจ้งเรื่องที่กำลังแสดงอยู่บนหน้าจอ (จากหน้าแดชบอร์ดหรือหน้าเคสแจ้งเรื่อง) ไปให้ backend
-// สร้างไฟล์ตรงตามที่เห็นบนหน้าจอ 100% แล้วดาวน์โหลดผ่าน Blob (ไม่ใช้ window.open เพราะตอนนี้เป็น POST)
-async function onExportExcel(source) {
+// ส่งออก Excel: /api/export.xlsx เป็น GET + เปิดด้วย window.open() แบบเดียวกับของเดิมที่เคยใช้งานได้ชัวร์
+// (ลองใช้ fetch()+Blob+<a download> มาก่อนหน้านี้ แต่พบว่าดาวน์โหลดไม่ทำงานในบางเบราว์เซอร์/สภาพแวดล้อมจริง
+// จึงย้อนกลับมาใช้วิธี GET เปิดลิงก์ตรงๆ ซึ่งเสถียรกว่า พร้อมแนบรายการเลข ticket ที่กำลังแสดงอยู่จริงไปเป็น query string)
+function onExportExcel(source) {
   if (!state.auth) return;
-  setState({ exportBusy: true });
-  try {
-    const d = computeDerived();
-    const list = source === 'dashboard' ? d.filteredCases : d.casesSorted;
-    const tickets = list.map((c) => c.ticketNo);
-    if (!tickets.length) { showToast('ไม่มีรายการเคสให้ออกรายงาน'); return; }
-    const { dateFrom, dateTo } = currentRangeDates();
-    const res = await fetch('/api/export.xlsx', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tickets, dateFrom, dateTo }),
-    });
-    if (res.status === 401) { handleAuthExpired({ __status: 401 }); return; }
-    if (!res.ok) { showToast('ออกรายงานไม่สำเร็จ'); return; }
-    const blob = await res.blob();
-    let fname = 'รายงานพัสดุ.xlsx';
-    const cd = res.headers.get('Content-Disposition') || '';
-    const mStar = cd.match(/filename\*=UTF-8''([^;]+)/i);
-    const mPlain = cd.match(/filename="?([^";]+)"?/i);
-    if (mStar) fname = decodeURIComponent(mStar[1]);
-    else if (mPlain) fname = mPlain[1];
-    const blobUrl = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = blobUrl; a.download = fname;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(blobUrl);
-  } catch (e) {
-    showToast(e.message || 'ออกรายงานไม่สำเร็จ');
-  } finally {
-    setState({ exportBusy: false });
-  }
+  const d = computeDerived();
+  const list = source === 'dashboard' ? d.filteredCases : d.casesSorted;
+  const tickets = list.map((c) => c.ticketNo);
+  if (!tickets.length) { showToast('ไม่มีรายการเคสให้ออกรายงาน'); return; }
+  const { dateFrom, dateTo } = currentRangeDates();
+  const url = '/api/export.xlsx' + qs({ tickets: tickets.join(','), dateFrom, dateTo });
+  window.open(url, '_blank');
 }
 
 function saveDashboardImage() {
@@ -492,9 +485,9 @@ function computeDerived() {
   const filtered = inRange.filter(matchesFilter);
 
   const totalCases = filtered.length;
-  const closedCases = filtered.filter((c) => c.status === 'ปิดเรื่อง').length;
+  const closedCases = filtered.filter((c) => c.status === 'ส่งสาขา/ปิดเรื่อง').length;
   const openCases = totalCases - closedCases;
-  const closedWithDates = filtered.filter((c) => c.status === 'ปิดเรื่อง' && c.closedAt && c.openedAt);
+  const closedWithDates = filtered.filter((c) => c.status === 'ส่งสาขา/ปิดเรื่อง' && c.closedAt && c.openedAt);
   const avgCloseDays = closedWithDates.length
     ? (closedWithDates.reduce((sum, c) => sum + (new Date(c.closedAt) - new Date(c.openedAt)) / 86400000, 0) / closedWithDates.length).toFixed(1)
     : null;
@@ -531,7 +524,7 @@ function computeDerived() {
   const staffNames = Array.from(new Set(filtered.map((c) => caseOwner(c)).filter(Boolean)));
   const staffStats = staffNames.map((name) => {
     const mine = filtered.filter((c) => caseOwner(c) === name);
-    const closed = mine.filter((c) => c.status === 'ปิดเรื่อง');
+    const closed = mine.filter((c) => c.status === 'ส่งสาขา/ปิดเรื่อง');
     const closedD = closed.filter((c) => c.closedAt && c.openedAt);
     const avg = closedD.length
       ? (closedD.reduce((s, c) => s + (new Date(c.closedAt) - new Date(c.openedAt)) / 86400000, 0) / closedD.length).toFixed(1) + ' วัน'
@@ -539,8 +532,9 @@ function computeDerived() {
     return { name, total: mine.length, closed: closed.length, avgTime: avg };
   });
 
-  // หน้าเคสแจ้งเรื่อง: เคสที่ปิดแล้วไม่ต้องแสดง และเรียงตามวันที่แจ้งเรื่องก่อน-หลัง (แจ้งก่อนอยู่บนสุด)
-  const casesSorted = filtered.filter((c) => c.status !== 'ปิดเรื่อง').slice()
+  // หน้าเคสแจ้งเรื่อง: ตัวกรองแยกออกจากหน้าแดชบอร์ดโดยสิ้นเชิง (ไม่ผูกกับช่วงวันที่/สถานะ/ตัวกรองของแดชบอร์ด)
+  // แสดงรายการทั้งหมดที่ยังไม่ปิดเรื่อง ไม่จำกัดช่วงวันที่ และเรียงตามวันที่แจ้งเรื่องก่อน-หลัง (แจ้งก่อนอยู่บนสุด)
+  const casesSorted = state.cases.filter((c) => c.status !== 'ส่งสาขา/ปิดเรื่อง').slice()
     .sort((a, b) => new Date(a.openedAt) - new Date(b.openedAt));
 
   return {
@@ -774,10 +768,15 @@ function renderStaff() {
   const pageTitles = { dashboard: 'แดชบอร์ด', cases: 'เคสแจ้งเรื่อง', users: 'ผู้ใช้งาน' };
 
   let pageBody = '';
+  let pageTitle = pageTitles[s.staffPage];
   if (s.casesLoading && !s.casesLoaded) {
     pageBody = `<div style="padding:40px;text-align:center;color:#8A8380">กำลังโหลดข้อมูล...</div>`;
   } else if (s.casesError) {
     pageBody = `<div style="padding:40px;text-align:center;color:#B3160F">${esc(s.casesError)} <span class="clickable" onclick="loadCases()" style="text-decoration:underline">ลองใหม่</span></div>`;
+  } else if (s.selectedTicket) {
+    // รายละเอียดเคส: แสดงอยู่ภายในหน้าเดียวกัน (แทนที่รายการ) ไม่ใช้ popup/modal ลอยทับอีกต่อไป
+    pageBody = renderCaseDetail();
+    pageTitle = 'รายละเอียดเคส';
   } else if (s.staffPage === 'dashboard') {
     pageBody = renderDashboard();
   } else if (s.staffPage === 'cases') {
@@ -800,7 +799,7 @@ function renderStaff() {
     </aside>
     <div style="flex:1;background:#F7F5F3;min-width:0">
       <header style="background:#fff;border-bottom:1px solid #EEEAE8;padding:16px 32px;display:flex;justify-content:space-between;align-items:center">
-        <div style="font-family:'Prompt',sans-serif;font-size:19px;font-weight:600">${pageTitles[s.staffPage]}</div>
+        <div style="font-family:'Prompt',sans-serif;font-size:19px;font-weight:600">${esc(pageTitle)}</div>
         <div style="display:flex;align-items:center;gap:10px">
           <span style="font-size:12px;background:#FBEAE9;color:#B3160F;padding:5px 12px;border-radius:20px;font-weight:700">${esc(roleLabel)} · ${esc(s.auth ? s.auth.nickname : '')}</span>
           <div style="width:34px;height:34px;border-radius:50%;background:#221F1F;color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700">${esc((s.auth && s.auth.nickname ? s.auth.nickname[0] : 'U'))}</div>
@@ -810,7 +809,6 @@ function renderStaff() {
       <div style="padding:28px 32px">${pageBody}</div>
     </div>
   </div>
-  ${s.selectedTicket ? renderCaseModal() : ''}
   ${s.reportOpen ? renderReportModal() : ''}
   ${s.userFormOpen ? renderUserFormModal() : ''}`;
 }
@@ -915,7 +913,7 @@ function renderCases() {
   return `
   <div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-      <div style="font-size:13px;color:#8A8380">ทั้งหมด ${d.casesSorted.length} เรื่อง${d.dashFilterActive ? ' (กรองอยู่)' : ''}</div>
+      <div style="font-size:13px;color:#8A8380">ทั้งหมด ${d.casesSorted.length} เรื่องที่ยังไม่ปิดเรื่อง</div>
       <div style="display:flex;gap:10px">
         <button onclick="openReportModal()" style="background:#D6201F;color:#fff;border:none;padding:9px 18px;border-radius:4px;font-size:13px;font-weight:700;cursor:pointer">+ แจ้งเรื่องใหม่</button>
         <button onclick="onExportExcel('cases')" style="background:#fff;border:1px solid #DCD6D3;padding:9px 18px;border-radius:4px;font-size:13px;font-weight:700;cursor:pointer;color:#3D3835">${s.exportBusy ? '...' : '⬇ ส่งออก Excel'}</button>
@@ -974,9 +972,11 @@ function renderUsers() {
   </div>`;
 }
 
-function renderCaseModal() {
+// รายละเอียดเคส: แสดงอยู่ภายในหน้าเดียวกับรายการ (ไม่ใช่ popup/modal ลอยทับ) — คลิก "ดู" แล้วพื้นที่เนื้อหาหลัก
+// จะสลับมาแสดงหน้านี้แทนที่รายการ พร้อมปุ่ม "← กลับ" เพื่อย้อนกลับไปหน้าเคสแจ้งเรื่อง
+function renderCaseDetail() {
   const c = state.cases.find((x) => x.ticketNo === state.selectedTicket);
-  if (!c) return '';
+  if (!c) return `<div style="padding:40px;text-align:center;color:#8A8380">ไม่พบเคสนี้ <span class="clickable" onclick="closeCase()" style="text-decoration:underline">← กลับ</span></div>`;
   const pending = state.pendingStatus;
   // ทุกสถานะเลือกได้อิสระไม่ต้องเรียงลำดับ — เลือกแล้วต้องกดปุ่มยืนยันด้านล่างถึงจะบันทึกจริง (ไม่มี popup)
   const steps = STATUS_FLOW.map((label) => {
@@ -992,14 +992,12 @@ function renderCaseModal() {
     return { label, clickable: true, bg: '#F7F5F3', color: '#5A5450', border: '#E7E2DF' };
   });
   return `
-  <div style="position:fixed;inset:0;background:rgba(34,31,31,0.5);display:flex;align-items:center;justify-content:center;z-index:50" onclick="closeCase()">
-    <div style="background:#fff;border-radius:8px;width:520px;max-width:90vw;max-height:85vh;overflow:auto" onclick="stopProp(event)">
-      <div style="padding:20px 24px;border-bottom:1px solid #EEEAE8;display:flex;justify-content:space-between;align-items:center">
-        <div>
-          <div style="font-size:12px;color:#8A8380">เลขพัสดุ · ${esc(c.ticketNo)}</div>
-          <div style="font-size:18px;font-weight:700;font-family:'Prompt',sans-serif">${esc(c.parcelNo)}</div>
-        </div>
-        <span class="clickable" onclick="closeCase()" style="font-size:18px;color:#8A8380">✕</span>
+  <div style="display:flex;flex-direction:column;gap:16px">
+    <div class="clickable" onclick="closeCase()" style="font-size:13px;color:#8A8380;font-weight:600;display:inline-flex;align-items:center;gap:4px;width:fit-content">← กลับไปหน้าเคสแจ้งเรื่อง</div>
+    <div style="background:#fff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.04);overflow:hidden">
+      <div style="padding:20px 24px;border-bottom:1px solid #EEEAE8">
+        <div style="font-size:12px;color:#8A8380">เลขพัสดุ · เลขแจ้งเรื่อง ${esc(c.ticketNo)}</div>
+        <div style="font-size:18px;font-weight:700;font-family:'Prompt',sans-serif">${esc(c.parcelNo)}</div>
       </div>
       <div style="padding:22px 24px;display:flex;flex-direction:column;gap:14px">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;font-size:13px">
@@ -1035,6 +1033,25 @@ function renderCaseModal() {
             </div>
           </div>` : ''}
         </div>
+      </div>
+    </div>
+    <div style="background:#fff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.04);overflow:hidden">
+      <div style="padding:16px 24px;border-bottom:1px solid #EEEAE8;font-size:14px;font-weight:700;font-family:'Prompt',sans-serif">ประวัติการติดตาม</div>
+      <div style="padding:16px 24px">
+        ${state.caseHistoryLoading ? `<div style="color:#8A8380;font-size:13px">กำลังโหลดประวัติ...</div>` : ''}
+        ${!state.caseHistoryLoading && !state.caseHistory.length ? `<div style="color:#A39C99;font-size:13px">ยังไม่มีประวัติการติดตาม</div>` : ''}
+        ${!state.caseHistoryLoading && state.caseHistory.length ? `
+        <div style="display:flex;flex-direction:column;gap:12px">
+          ${state.caseHistory.slice().reverse().map((h) => `
+          <div style="display:flex;gap:12px;font-size:12.5px;border-bottom:1px solid #F3F0EE;padding-bottom:10px">
+            <div style="color:#8A8380;white-space:nowrap;min-width:130px">${esc(fmtDateTimeThai(h.datetime))}</div>
+            <div style="flex:1">
+              <div><b>${esc(h.status || '-')}</b>${h.channel ? ` · ${esc(h.channel)}` : ''}</div>
+              ${h.note ? `<div style="color:#5A5450;margin-top:2px">${esc(h.note)}</div>` : ''}
+              <div style="color:#A39C99;margin-top:2px">โดย ${esc(h.staffNickname || h.staffUsername || '-')}</div>
+            </div>
+          </div>`).join('')}
+        </div>` : ''}
       </div>
     </div>
   </div>`;

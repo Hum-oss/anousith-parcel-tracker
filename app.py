@@ -81,7 +81,7 @@ CASE_COLS = [
     "updatedAt", "closedAt",
 ]
 
-STATUSES = ["รอติดตาม", "กำลังติดตาม", "ส่งสาขา", "ปิดเรื่อง"]
+STATUSES = ["รอติดตาม", "กำลังติดตาม", "ส่งสาขา", "ส่งสาขา/ปิดเรื่อง"]
 
 app = Flask(__name__)
 app.secret_key = os.environ["SECRET_KEY"]
@@ -349,7 +349,7 @@ def api_update_status(ticket_no):
     nickname = session["nickname"]
     # ช่องทางล่าสุด — คงค่าเดิมไว้ถ้าไม่ได้ส่งมาใหม่ (หน้าเว็บปัจจุบันไม่มี UI เลือกช่องทางตอนเปลี่ยนสถานะ)
     channel_val = data.get("channel") or case.get("lastChannel") or ""
-    closed_val = now if status == "ปิดเรื่อง" else (case.get("closedAt") or "")
+    closed_val = now if status == "ส่งสาขา/ปิดเรื่อง" else (case.get("closedAt") or "")
 
     # อัปเดตคอลัมน์ J:N (สถานะปัจจุบัน, ช่องทางล่าสุด, เจ้าหน้าที่ล่าสุด, วันที่อัปเดตล่าสุด, วันที่ปิดเรื่อง)
     # ในคำขอ API ครั้งเดียว (แต่ก่อนยิงทีละคอลัมน์แยกกันสูงสุด 5 ครั้ง ทำให้อัปเดตสถานะช้า)
@@ -369,18 +369,19 @@ def api_update_status(ticket_no):
     return jsonify(ok=True, ticketNo=case["ticketNo"], case=updated_case)
 
 
-@app.post("/api/export.xlsx")
+@app.get("/api/export.xlsx")
 @staff_required
 def api_export_excel():
-    # ออกแบบใหม่: รับรายการเลขแจ้งเรื่อง (tickets) ที่หน้าเว็บกรอง/แสดงอยู่ตรงๆ มาเลย
+    # รับรายการเลขแจ้งเรื่อง (tickets) ที่หน้าเว็บกรอง/แสดงอยู่ตรงๆ มาเป็น query string (คั่นด้วย comma)
     # แทนที่จะให้ backend คำนวณเงื่อนไขกรองซ้ำ — รับประกันว่าไฟล์ที่ออกมาตรงกับที่เห็นบนหน้าจอ 100%
     # (ไม่ว่าจะเป็นหน้าแดชบอร์ดหรือหน้าเคสแจ้งเรื่อง ซึ่งมีเงื่อนไขกรองต่างกัน)
-    data = request.get_json(force=True, silent=True) or {}
-    tickets = data.get("tickets") or []
-    date_from = data.get("dateFrom") or ""
-    date_to = data.get("dateTo") or ""
+    # ใช้ GET + window.open() แบบเดิม (ไม่ใช้ fetch+Blob) เพื่อให้ดาวน์โหลดได้ชัวร์ในทุกเบราว์เซอร์
+    tickets_raw = request.args.get("tickets") or ""
+    tickets = [t.strip() for t in tickets_raw.split(",") if t.strip()]
+    date_from = request.args.get("dateFrom") or ""
+    date_to = request.args.get("dateTo") or ""
 
-    if not isinstance(tickets, list) or not tickets:
+    if not tickets:
         return jsonify(ok=False, error="ไม่มีรายการเคสให้ออกรายงาน"), 400
 
     by_ticket = {c["ticketNo"]: c for c in get_all_cases()}
