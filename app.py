@@ -46,16 +46,22 @@ SPREADSHEET_ID = os.environ["SPREADSHEET_ID"]  # ไอดีของ parcel-tr
 
 _creds_raw = os.environ["GOOGLE_CREDENTIALS_JSON"]  # เนื้อไฟล์ service_account.json ทั้งไฟล์ (เป็น JSON string)
 _creds_info = json.loads(_creds_raw)
-# เพิ่ม scope ของ Drive (เต็ม ไม่ใช่ drive.file) เพื่ออัปโหลด/แชร์รูปภาพเข้าโฟลเดอร์ที่ผู้ใช้แชร์ให้ service
-# account ไว้ล่วงหน้า — drive.file แคบเกินไปเพราะจำกัดเฉพาะไฟล์ที่แอปสร้าง/เปิดเองผ่าน Picker เท่านั้น
-_SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 _creds = Credentials.from_service_account_info(_creds_info, scopes=_SCOPES)
 _gc = gspread.authorize(_creds)
 
-# โฟลเดอร์ Google Drive สำหรับอัปโหลดรูปภาพเคสใหม่/แก้ไขจากหน้าเว็บ — ต้องแชร์โฟลเดอร์นี้ให้อีเมลของ
-# service account (ดูใน Google Cloud Console) เป็นสิทธิ์ "ผู้แก้ไข (Editor)" ก่อน ไม่งั้นอัปโหลดไม่ได้
+# โฟลเดอร์ Google Drive สำหรับอัปโหลดรูปภาพเคสใหม่/แก้ไขจากหน้าเว็บ
 # ไม่บังคับต้องตั้งตอนสตาร์ทแอป (ยังใช้งานฟีเจอร์อื่นได้ตามปกติ) แต่ endpoint อัปโหลดรูปจะแจ้ง error ชัดเจนถ้ายังไม่ตั้ง
 DRIVE_UPLOAD_FOLDER_ID = os.environ.get("DRIVE_UPLOAD_FOLDER_ID", "").strip()
+
+# ข้อมูล OAuth ของบัญชี Google จริงที่เป็นเจ้าของโฟลเดอร์อัปโหลดรูปภาพ (เช่น chinawat.new@gmail.com)
+# ใช้แทน Service Account ตอนอัปโหลดไฟล์ขึ้น Drive โดยเฉพาะ เพราะ Service Account ไม่มี storage quota
+# เป็นของตัวเอง (ข้อจำกัดของ Google) สร้างไฟล์ใหม่ไม่ได้แม้จะมีสิทธิ์ Editor ในโฟลเดอร์ที่แชร์ให้ก็ตาม
+# ดูวิธีขอค่าทั้งสามตัวนี้ใน README.md หัวข้อ "อัปโหลดรูปภาพเคส (Drive)" — ได้มาจากการรัน
+# get_drive_refresh_token.py ครั้งเดียวบนเครื่อง (ไม่เกี่ยวกับ Service Account เลย)
+DRIVE_OAUTH_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip()
+DRIVE_OAUTH_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+DRIVE_OAUTH_REFRESH_TOKEN = os.environ.get("GOOGLE_OAUTH_REFRESH_TOKEN", "").strip()
 
 
 def _open_spreadsheet_with_retry(gc, spreadsheet_id, attempts=5, base_delay=2):
@@ -388,9 +394,9 @@ MAX_PHOTO_BYTES = 8 * 1024 * 1024
 def api_upload_case_photo(ticket_no):
     # เพิ่ม/แก้ไขรูปภาพประกอบเคส — พนักงานทุกคน (ไม่ใช่แค่แอดมิน) มีสิทธิ์ทำได้ (@staff_required อนุญาตทั้ง
     # staff และ admin) หน้าเว็บจะให้ยืนยันก่อนอัปโหลดจริงอยู่แล้ว ฝั่ง backend นี้จึงไม่มีขั้นตอนยืนยันซ้ำอีก
-    if not DRIVE_UPLOAD_FOLDER_ID:
-        return jsonify(ok=False, error="ระบบยังไม่ได้ตั้งค่าโฟลเดอร์ Google Drive สำหรับอัปโหลดรูปภาพ "
-                                        "(DRIVE_UPLOAD_FOLDER_ID) กรุณาติดต่อผู้ดูแลระบบ"), 500
+    if not (DRIVE_UPLOAD_FOLDER_ID and DRIVE_OAUTH_CLIENT_ID and DRIVE_OAUTH_CLIENT_SECRET and DRIVE_OAUTH_REFRESH_TOKEN):
+        return jsonify(ok=False, error="ระบบยังไม่ได้ตั้งค่าอัปโหลดรูปภาพ Google Drive ครบถ้วน "
+                                        "กรุณาติดต่อผู้ดูแลระบบ"), 500
 
     row_i, case = find_case(ticket_no)
     if not case:
@@ -413,9 +419,21 @@ def api_upload_case_photo(ticket_no):
     try:
         # import ตรงนี้ (lazy) แทนบนสุดของไฟล์ เพื่อไม่ให้การสร้าง Drive client ไปทำ network call
         # ตอนแอปสตาร์ทขึ้น (จะได้ไม่เพิ่มความเสี่ยงต่อ retry/startup logic ของการเชื่อมต่อ Sheets ด้านบน)
+        from google.oauth2.credentials import Credentials as UserCredentials
         from googleapiclient.discovery import build
         from googleapiclient.http import MediaIoBaseUpload
-        drive = build("drive", "v3", credentials=_creds, cache_discovery=False)
+        # อัปโหลดด้วยสิทธิ์ของบัญชี Google จริงที่เป็นเจ้าของโฟลเดอร์ (ผ่าน OAuth refresh token) แทน
+        # Service Account เพราะ Service Account ไม่มี storage quota เป็นของตัวเอง สร้างไฟล์ใหม่ไม่ได้
+        # แม้จะมีสิทธิ์ Editor ในโฟลเดอร์ที่แชร์ให้ก็ตาม (ข้อจำกัดจริงของ Google Drive API)
+        user_creds = UserCredentials(
+            token=None,
+            refresh_token=DRIVE_OAUTH_REFRESH_TOKEN,
+            client_id=DRIVE_OAUTH_CLIENT_ID,
+            client_secret=DRIVE_OAUTH_CLIENT_SECRET,
+            token_uri="https://oauth2.googleapis.com/token",
+            scopes=["https://www.googleapis.com/auth/drive"],
+        )
+        drive = build("drive", "v3", credentials=user_creds, cache_discovery=False)
         ext = ALLOWED_PHOTO_TYPES[mimetype]
         media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mimetype, resumable=False)
         file_meta = {
