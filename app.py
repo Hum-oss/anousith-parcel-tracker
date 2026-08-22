@@ -96,6 +96,14 @@ CASE_COLS = [
 
 STATUSES = ["รอติดตาม", "กำลังติดตาม", "ส่งสาขา", "ส่งสาขา/ปิดเรื่อง"]
 
+# บทบาทพนักงานที่ล็อกอินเข้าระบบได้ทั้งหมด — ทุกบทบาทเห็นหน้าแดชบอร์ด/เคสแจ้งเรื่องและออกรายงาน Excel ได้
+# (ต่างจาก "หัวหน้า" ตรงที่ "หัวหน้า" ดูได้อย่างเดียว แก้ไขข้อมูลเคสไม่ได้ ดู CASE_EDIT_ROLES ด้านล่าง)
+ROLES = ["พนักงานบริการลูกค้า", "พนักงานติดตาม", "หัวหน้า", "admin"]
+ALL_ROLES = set(ROLES)
+# บทบาทที่แก้ไขข้อมูลเคสได้ (เปลี่ยนสถานะ / แก้ไขเบอร์ติดต่อ-รายละเอียด / เพิ่ม-แก้ไขรูปภาพ) — ไม่รวม
+# "หัวหน้า" เพราะ "หัวหน้า" มีสิทธิ์แค่ดูข้อมูลและออกรายงาน Excel เท่านั้น
+CASE_EDIT_ROLES = {"admin", "พนักงานบริการลูกค้า", "พนักงานติดตาม"}
+
 app = Flask(__name__)
 app.secret_key = os.environ["SECRET_KEY"]
 app.permanent_session_lifetime = timedelta(hours=12)
@@ -152,10 +160,25 @@ def find_user(username):
 # ===================== Auth decorators (session cookie, ไม่ใช้ sessionToken แบบ Apps Script) =====================
 
 def staff_required(fn):
+    # อนุญาตทุกบทบาทที่ล็อกอินได้ (ดูแดชบอร์ด/เคสแจ้งเรื่อง/ออกรายงาน Excel ได้ทุกบทบาท รวม "หัวหน้า" ด้วย)
+    # ถ้าต้องการจำกัดเฉพาะบทบาทที่แก้ไขข้อมูลเคสได้ ให้ใช้ @case_edit_required แทน
     @wraps(fn)
     def wrapper(*a, **kw):
-        if not session.get("username") or session.get("role") not in ("staff", "admin"):
+        if not session.get("username") or session.get("role") not in ALL_ROLES:
             return jsonify(ok=False, error="กรุณาเข้าสู่ระบบ"), 401
+        return fn(*a, **kw)
+    return wrapper
+
+
+def case_edit_required(fn):
+    # แก้ไขข้อมูลเคสได้ (เปลี่ยนสถานะ / แก้ไขเบอร์ติดต่อ-รายละเอียด / เพิ่ม-แก้ไขรูปภาพ) — ไม่รวม
+    # บทบาท "หัวหน้า" ซึ่งมีสิทธิ์แค่ดูข้อมูลและออกรายงาน Excel เท่านั้น (ดู CASE_EDIT_ROLES ด้านบน)
+    @wraps(fn)
+    def wrapper(*a, **kw):
+        if not session.get("username") or session.get("role") not in ALL_ROLES:
+            return jsonify(ok=False, error="กรุณาเข้าสู่ระบบ"), 401
+        if session.get("role") not in CASE_EDIT_ROLES:
+            return jsonify(ok=False, error="บทบาทนี้มีสิทธิ์ดูข้อมูลและออกรายงาน Excel เท่านั้น ไม่สามารถแก้ไขข้อมูลเคสได้"), 403
         return fn(*a, **kw)
     return wrapper
 
@@ -349,7 +372,7 @@ def api_case_detail(ticket_no):
 
 
 @app.patch("/api/cases/<ticket_no>")
-@staff_required
+@case_edit_required
 def api_update_status(ticket_no):
     data = request.get_json(force=True, silent=True) or {}
     status = data.get("status")
@@ -385,9 +408,9 @@ def api_update_status(ticket_no):
 
 
 @app.post("/api/cases/<ticket_no>/edit")
-@staff_required
+@case_edit_required
 def api_edit_case_info(ticket_no):
-    # แก้ไข "รายละเอียด" และ "เบอร์ติดต่อ" ของเคส — พนักงานทุกคนแก้ไขได้ (@staff_required อนุญาตทั้ง
+    # แก้ไข "รายละเอียด" และ "เบอร์ติดต่อ" ของเคส — ทุกบทบาทที่แก้ไขข้อมูลเคสได้ (@case_edit_required อนุญาตทั้ง
     # staff และ admin) ฟิลด์อื่นของเคสยังคงแก้ไขไม่ได้จากหน้านี้เหมือนเดิม
     data = request.get_json(force=True, silent=True) or {}
     phone = (data.get("phone") or "").strip()
@@ -423,9 +446,9 @@ MAX_PHOTO_BYTES = 8 * 1024 * 1024
 
 
 @app.post("/api/cases/<ticket_no>/photo")
-@staff_required
+@case_edit_required
 def api_upload_case_photo(ticket_no):
-    # เพิ่ม/แก้ไขรูปภาพประกอบเคส — พนักงานทุกคน (ไม่ใช่แค่แอดมิน) มีสิทธิ์ทำได้ (@staff_required อนุญาตทั้ง
+    # เพิ่ม/แก้ไขรูปภาพประกอบเคส — ทุกบทบาทที่แก้ไขข้อมูลเคสได้ (@case_edit_required อนุญาตทั้ง
     # staff และ admin) หน้าเว็บจะให้ยืนยันก่อนอัปโหลดจริงอยู่แล้ว ฝั่ง backend นี้จึงไม่มีขั้นตอนยืนยันซ้ำอีก
     if not (DRIVE_UPLOAD_FOLDER_ID and DRIVE_OAUTH_CLIENT_ID and DRIVE_OAUTH_CLIENT_SECRET and DRIVE_OAUTH_REFRESH_TOKEN):
         return jsonify(ok=False, error="ระบบยังไม่ได้ตั้งค่าอัปโหลดรูปภาพ Google Drive ครบถ้วน "
@@ -573,7 +596,7 @@ def api_add_user():
         return jsonify(ok=False, error="กรอกข้อมูลไม่ครบ"), 400
     if len(password) < 6:
         return jsonify(ok=False, error="รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร"), 400
-    if role not in ("staff", "admin"):
+    if role not in ROLES:
         return jsonify(ok=False, error="บทบาทไม่ถูกต้อง"), 400
     if find_user(username):
         return jsonify(ok=False, error="มีชื่อผู้ใช้นี้ในระบบอยู่แล้ว"), 400

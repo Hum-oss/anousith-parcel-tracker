@@ -100,6 +100,13 @@ function caseOwner(c) {
   return (c.lastStaff && c.lastStaff.trim()) || (c.source && c.source.trim()) || '';
 }
 
+// บทบาท "หัวหน้า" ดูข้อมูลแดชบอร์ด/เคสแจ้งเรื่องได้ปกติ แต่แก้ไขข้อมูลเคสไม่ได้ (เปลี่ยนสถานะ/แก้ไขเบอร์
+// ติดต่อ-รายละเอียด/รูปภาพ/แจ้งเรื่องใหม่) — ทำได้แค่ดูและออกรายงาน Excel เท่านั้น ทุกบทบาทอื่นแก้ไขได้ปกติ
+// (backend บังคับด้วย @case_edit_required อยู่แล้ว อันนี้แค่ซ่อน/ปิดปุ่มฝั่งหน้าเว็บให้สอดคล้องกัน)
+function canEditCase() {
+  return !!(state.auth && state.auth.role !== 'หัวหน้า');
+}
+
 // ===================== รูปภาพจาก Google Drive =====================
 // รูปที่ sync มาจาก AppSheet เก็บเป็นลิงก์ https://drive.google.com/uc?export=view&id=... ซึ่ง
 // ใช้เป็น <img src> ตรงๆ ได้ไม่เสถียร (กูเกิลจำกัด hotlink บนลิงก์รูปแบบนี้บ่อยๆ แม้ไฟล์จะแชร์แบบ
@@ -377,7 +384,7 @@ function stopProp(ev) { ev.stopPropagation(); }
 
 // เลือกสถานะที่จะเปลี่ยน (ยังไม่บันทึก) — เลือกได้อิสระไม่ต้องเรียงลำดับ กดปุ่มยืนยันด้านล่างถึงจะบันทึกจริง
 function selectPendingStatus(status) {
-  if (!state.auth) return;
+  if (!canEditCase()) return;
   setState({ pendingStatus: status });
 }
 function cancelPendingStatus() { setState({ pendingStatus: null }); }
@@ -404,9 +411,9 @@ async function confirmStatusChange(ticketNo) {
   }
 }
 
-// ===================== แก้ไขเบอร์ติดต่อ/รายละเอียดเคส (พนักงานทุกคนมีสิทธิ์) =====================
+// ===================== แก้ไขเบอร์ติดต่อ/รายละเอียดเคส (ทุกบทบาทยกเว้น "หัวหน้า") =====================
 function startEditInfo() {
-  if (!state.auth) return;
+  if (!canEditCase()) return;
   setState({ editingInfo: true, editInfoError: null });
 }
 function cancelEditInfo() {
@@ -446,7 +453,7 @@ const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
 function onPhotoFileSelected(inputEl) {
   const file = inputEl.files && inputEl.files[0];
   inputEl.value = ''; // เคลียร์ input ทันที เพื่อให้เลือกไฟล์เดิมซ้ำได้อีกครั้งถ้ายกเลิกแล้วเลือกใหม่
-  if (!file) return;
+  if (!canEditCase() || !file) return;
   if (!ALLOWED_PHOTO_TYPES.includes(file.type)) { showToast('รองรับเฉพาะไฟล์รูปภาพ (JPG, PNG, WEBP, GIF)'); return; }
   if (file.size > MAX_PHOTO_BYTES) { showToast('ไฟล์รูปภาพใหญ่เกินไป (สูงสุดไม่เกิน 8MB)'); return; }
   if (state.pendingPhotoPreviewUrl) URL.revokeObjectURL(state.pendingPhotoPreviewUrl);
@@ -459,7 +466,7 @@ function cancelPendingPhoto() {
 }
 
 async function confirmPhotoUpload(ticketNo) {
-  if (!state.auth || !state.pendingPhotoFile) return;
+  if (!canEditCase() || !state.pendingPhotoFile) return;
   const file = state.pendingPhotoFile;
   setState({ photoUploading: true });
   try {
@@ -1058,7 +1065,7 @@ function renderCases() {
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
       <div style="font-size:13px;color:#8A8380">ทั้งหมด ${d.casesSorted.length} เรื่องที่ยังไม่ปิดเรื่อง</div>
       <div style="display:flex;gap:10px">
-        <button onclick="openReportModal()" style="background:#D6201F;color:#fff;border:none;padding:9px 18px;border-radius:4px;font-size:13px;font-weight:700;cursor:pointer">+ แจ้งเรื่องใหม่</button>
+        ${canEditCase() ? `<button onclick="openReportModal()" style="background:#D6201F;color:#fff;border:none;padding:9px 18px;border-radius:4px;font-size:13px;font-weight:700;cursor:pointer">+ แจ้งเรื่องใหม่</button>` : ''}
         <button onclick="onExportExcel('cases')" style="background:#fff;border:1px solid #DCD6D3;padding:9px 18px;border-radius:4px;font-size:13px;font-weight:700;cursor:pointer;color:#3D3835">${s.exportBusy ? '...' : '⬇ ส่งออก Excel'}</button>
       </div>
     </div>
@@ -1103,7 +1110,7 @@ function renderUsers() {
           ${state.users.map((u) => `<tr style="border-top:1px solid #F3F0EE">
             <td style="padding:12px 16px;font-weight:700">${esc(u.nickname)}</td>
             <td style="padding:12px 16px;color:#726B68">${esc(u.username)}</td>
-            <td style="padding:12px 16px"><span style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;background:#F1EDEB;color:#3D3835">${u.role === 'admin' ? 'แอดมิน' : 'พนักงาน'}</span></td>
+            <td style="padding:12px 16px"><span style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;background:#F1EDEB;color:#3D3835">${esc(u.role === 'admin' ? 'แอดมิน' : (u.role || 'ไม่ทราบบทบาท'))}</span></td>
             <td style="padding:12px 16px;text-align:right;white-space:nowrap">
               <span class="clickable" onclick="resetPassword('${esc(u.username)}')" style="color:#1E5FA8;font-weight:700;margin-right:14px">ตั้งรหัสผ่านใหม่</span>
               <span class="clickable" onclick="removeUser('${esc(u.username)}')" style="color:#D6201F;font-weight:700">ลบ</span>
@@ -1123,18 +1130,19 @@ function renderCaseModal() {
   const c = state.cases.find((x) => x.ticketNo === state.selectedTicket);
   if (!c) return '';
   const pending = state.pendingStatus;
+  const editable = canEditCase(); // false สำหรับบทบาท "หัวหน้า" — ดูข้อมูลได้อย่างเดียว
   // ทุกสถานะเลือกได้อิสระไม่ต้องเรียงลำดับ — เลือกแล้วต้องกดปุ่มยืนยันด้านล่างถึงจะบันทึกจริง (ไม่มี popup ของเบราว์เซอร์)
   const steps = STATUS_FLOW.map((label) => {
     const sc = STATUS_COLORS[label];
     const isCurrent = label === c.status;
     const isPending = pending === label;
     if (isPending) {
-      return { label, clickable: true, bg: sc.color, color: '#fff', border: sc.color };
+      return { label, clickable: editable, bg: sc.color, color: '#fff', border: sc.color };
     }
     if (isCurrent) {
-      return { label, clickable: true, bg: sc.bg, color: sc.color, border: 'transparent' };
+      return { label, clickable: editable, bg: sc.bg, color: sc.color, border: 'transparent' };
     }
-    return { label, clickable: true, bg: '#F7F5F3', color: '#5A5450', border: '#E7E2DF' };
+    return { label, clickable: editable, bg: '#F7F5F3', color: '#5A5450', border: '#E7E2DF' };
   });
   return `
   <div style="position:fixed;inset:0;background:rgba(34,31,31,0.5);display:flex;align-items:center;justify-content:center;z-index:50;padding:20px" onclick="closeCase()">
@@ -1163,7 +1171,7 @@ function renderCaseModal() {
             <div style="flex:1">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
                 <div style="color:#8A8380;font-size:12.5px">รายละเอียด</div>
-                ${!state.editingInfo ? `<span class="clickable" onclick="startEditInfo()" style="font-size:11px;font-weight:700;color:#D6201F">แก้ไข</span>` : ''}
+                ${!state.editingInfo && editable ? `<span class="clickable" onclick="startEditInfo()" style="font-size:11px;font-weight:700;color:#D6201F">แก้ไข</span>` : ''}
               </div>
               ${state.editingInfo
                 ? `<textarea id="editDetailInput" rows="3" style="width:100%;padding:8px;border:1px solid #DCD6D3;border-radius:6px;font-size:13px;resize:vertical;font-family:inherit">${esc(c.detail || '')}</textarea>`
@@ -1181,8 +1189,10 @@ function renderCaseModal() {
                 </div>
                 `}
               </div>
+              ${editable ? `
               <input type="file" id="photoFileInput" accept="image/jpeg,image/png,image/webp,image/gif" style="display:none" onchange="onPhotoFileSelected(this)">
               <button onclick="document.getElementById('photoFileInput').click()" style="width:100%;margin-top:6px;background:#fff;border:1px solid #DCD6D3;padding:5px 0;border-radius:4px;font-size:11px;font-weight:700;cursor:pointer;color:#3D3835">${c.photoUrl ? 'แก้ไขรูปภาพ' : '+ เพิ่มรูปภาพ'}</button>
+              ` : ''}
             </div>
           </div>
           ${state.editingInfo ? `
@@ -1207,9 +1217,9 @@ function renderCaseModal() {
           <div>
             <div style="color:#8A8380;font-size:12.5px;margin-bottom:6px">สถานะปัจจุบัน</div>
             <div style="display:flex;gap:6px;flex-wrap:wrap">
-              ${steps.map((st) => `<div class="clickable" onclick="selectPendingStatus('${esc(st.label)}')" style="padding:6px 12px;border-radius:20px;font-size:11.5px;font-weight:700;background:${st.bg};color:${st.color};border:1px solid ${st.border}">${esc(st.label)}</div>`).join('')}
+              ${steps.map((st) => `<div ${st.clickable ? `class="clickable" onclick="selectPendingStatus('${esc(st.label)}')"` : ''} style="padding:6px 12px;border-radius:20px;font-size:11.5px;font-weight:700;background:${st.bg};color:${st.color};border:1px solid ${st.border}${st.clickable ? '' : ';cursor:default'}">${esc(st.label)}</div>`).join('')}
             </div>
-            <div style="font-size:11.5px;color:#A39C99;margin-top:5px">คลิกเลือกสถานะที่ต้องการ แล้วกดยืนยันด้านล่าง</div>
+            <div style="font-size:11.5px;color:#A39C99;margin-top:5px">${editable ? 'คลิกเลือกสถานะที่ต้องการ แล้วกดยืนยันด้านล่าง' : 'บทบาทนี้ดูสถานะได้อย่างเดียว ไม่สามารถเปลี่ยนสถานะได้'}</div>
             ${pending && pending !== c.status ? `
             <div style="margin-top:10px;display:flex;align-items:center;gap:10px;background:#F7F5F3;border-radius:6px;padding:9px 12px">
               <div style="font-size:12px;color:#4A4442">เปลี่ยนสถานะเป็น <b>${esc(pending)}</b> ?</div>
@@ -1271,8 +1281,10 @@ function renderUserFormModal() {
         <div>
           <label style="font-size:12.5px;font-weight:600;color:#4A4442;display:block;margin-bottom:5px">สิทธิ์</label>
           <select id="newUserRole" style="width:100%;padding:9px 12px;border:1px solid #DCD6D3;border-radius:4px;font-size:13.5px;background:#fff">
-            <option value="staff">พนักงาน</option>
-            <option value="admin">แอดมิน</option>
+            <option value="พนักงานบริการลูกค้า">พนักงานบริการลูกค้า</option>
+            <option value="พนักงานติดตาม">พนักงานติดตาม</option>
+            <option value="หัวหน้า">หัวหน้า (ดูข้อมูล/ออกรายงาน Excel เท่านั้น)</option>
+            <option value="admin">แอดมิน (ดูแลระบบได้ทั้งหมด)</option>
           </select>
         </div>
         <div>
