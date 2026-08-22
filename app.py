@@ -384,6 +384,39 @@ def api_update_status(ticket_no):
     return jsonify(ok=True, ticketNo=case["ticketNo"], case=updated_case)
 
 
+@app.post("/api/cases/<ticket_no>/edit")
+@staff_required
+def api_edit_case_info(ticket_no):
+    # แก้ไข "รายละเอียด" และ "เบอร์ติดต่อ" ของเคส — พนักงานทุกคนแก้ไขได้ (@staff_required อนุญาตทั้ง
+    # staff และ admin) ฟิลด์อื่นของเคสยังคงแก้ไขไม่ได้จากหน้านี้เหมือนเดิม
+    data = request.get_json(force=True, silent=True) or {}
+    phone = (data.get("phone") or "").strip()
+    detail = (data.get("detail") or "").strip()
+    if not phone:
+        return jsonify(ok=False, error="กรุณากรอกเบอร์ติดต่อ"), 400
+    if not detail:
+        return jsonify(ok=False, error="กรุณากรอกรายละเอียด"), 400
+
+    row_i, case = find_case(ticket_no)
+    if not case:
+        return jsonify(ok=False, error="ไม่พบเคสนี้ในระบบ"), 404
+
+    sheet = ws(SHEET_CASES)
+    now = now_str()
+    nickname = session["nickname"]
+    # คอลัมน์ F = เบอร์ติดต่อ (phone), G = รายละเอียด (detail)
+    sheet.update(f"F{row_i}:G{row_i}", [[phone, detail]], value_input_option="USER_ENTERED")
+    # อัปเดต "พนักงานดูแล" (lastStaff) เป็นชื่อพนักงานที่แก้ไขข้อมูลครั้งนี้ ให้สอดคล้องกับฟีเจอร์แก้ไขรูปภาพ
+    sheet.update(f"L{row_i}:M{row_i}", [[nickname, now]], value_input_option="USER_ENTERED")
+
+    append_log(case["ticketNo"], case.get("lastChannel") or "", case["status"], "แก้ไขเบอร์ติดต่อ/รายละเอียด",
+               session["username"], nickname)
+
+    updated_case = dict(case)
+    updated_case.update({"phone": phone, "detail": detail, "lastStaff": nickname, "updatedAt": now})
+    return jsonify(ok=True, ticketNo=case["ticketNo"], case=updated_case)
+
+
 # ประเภทไฟล์รูปภาพที่รับอัปโหลด และขนาดสูงสุด (ไบต์) — คู่กับ app.config["MAX_CONTENT_LENGTH"] ด้านบน
 ALLOWED_PHOTO_TYPES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif"}
 MAX_PHOTO_BYTES = 8 * 1024 * 1024
